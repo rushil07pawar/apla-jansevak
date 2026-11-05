@@ -61,6 +61,8 @@ Staff phone/password authentication is described in [staff-mobile-auth.md](docs/
 
 ## Deployment checklist
 
+The frontend package is in `client/`; the repository root has no `package.json`. Set the Vercel project's **Root Directory** to `client`. The tracked `client/vercel.json` installs from `client/package-lock.json` including dev dependencies, runs `npm run build`, and serves `dist`. Do not override these commands with `vite build` or an install command that omits dev dependencies: Vite is a frontend dev dependency.
+
 - Set the two `VITE_SUPABASE_*` values in protected frontend-host environment settings and rebuild.
 - Set `CLIENT_ORIGIN` on the server to the deployed frontend origin.
 - Before launch, test registration/email confirmation, profile isolation, complaint RLS, staff department access, and private-photo access against a non-production Supabase project.
