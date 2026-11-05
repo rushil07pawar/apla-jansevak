@@ -1,5 +1,6 @@
--- PREPARE ONLY: review and apply manually to a non-production Supabase project first.
--- This migration is intentionally not applied by the application.
+-- HISTORICAL PREPARE ONLY: do not apply with the corrected foundation migration.
+-- The corrected foundation already defines these staff fields and ward-aware authorization.
+-- This file is intentionally not applied by the application and is not in the apply sequence.
 -- Auth users must be created by an administrator with auth.admin.createUser({ phone, password,
 -- phone_confirm: true }); never create a fake email address from a mobile number.
 
@@ -37,7 +38,5 @@ returns boolean language sql stable security definer set search_path='' as $$
   )
 $$;
 
--- Ward-level authorization is not present in the current schema. Before enabling a staff
--- dashboard for ward-scoped complaints, add wards and an explicit staff-to-ward permission
--- table, backfill every complaint with a ward, and replace staff complaint/storage policies
--- with a function that checks department *and* ward. Do not grant dashboard access first.
+-- Superseded: the corrected foundation migration includes ward assignments and policies that
+-- check both department and ward. Do not run this department-only helper migration.

@@ -27,11 +27,12 @@ npm run build
 In the target project, use the Supabase Dashboard SQL Editor with an administrator account. Each query below is read-only.
 
 ```sql
--- Tables expected from the foundation migration
+-- Tables expected from the corrected foundation migration
 select tablename, rowsecurity
 from pg_tables
 where schemaname = 'public'
-  and tablename in ('departments', 'profiles', 'staff_profiles', 'complaints',
+  and tablename in ('departments', 'wards', 'profiles', 'staff_profiles',
+                    'staff_ward_assignments', 'complaints',
                     'complaint_assignments', 'complaint_status_history')
 order by tablename;
 
@@ -39,13 +40,15 @@ order by tablename;
 select indexname, indexdef
 from pg_indexes
 where schemaname = 'public'
-  and tablename in ('complaints', 'complaint_assignments', 'complaint_status_history')
+  and tablename in ('complaints', 'staff_ward_assignments',
+                    'complaint_assignments', 'complaint_status_history')
 order by tablename, indexname;
 
 -- Review policies, including storage policies
 select schemaname, tablename, policyname, cmd, roles, qual, with_check
 from pg_policies
-where (schemaname = 'public' and tablename in ('profiles', 'staff_profiles', 'complaints',
+where (schemaname = 'public' and tablename in ('departments', 'wards', 'profiles',
+       'staff_profiles', 'staff_ward_assignments', 'complaints',
        'complaint_assignments', 'complaint_status_history'))
    or (schemaname = 'storage' and tablename = 'objects')
 order by schemaname, tablename, policyname;
@@ -58,7 +61,9 @@ group by datname, usename, application_name, state
 order by connections desc;
 ```
 
-For a meaningful RLS check, create two disposable citizen users and one authorised staff user in a non-production project. Using separate authenticated browser sessions, verify that citizen A cannot select or update citizen B's complaint; verify that staff access is limited to its department; and verify that a user outside the allowed department cannot download a complaint photo. Delete the dedicated test records afterwards according to the environment's retention policy.
+For a meaningful RLS check, create disposable test users in a non-production project. Verify that citizen A cannot select or update citizen B's complaint; staff cannot access a complaint without both the matching department and an active ward assignment; and an explicitly authorized administrator can access complaints. Verify that staff cannot change their own staff profile or ward assignments through the client. A citizen should upload only to their own complaint path, and staff outside its department/ward and citizens other than the owner must not download its linked photo. Browser role checks do not replace these database checks.
+
+See the [database migration runbook](database-migration-runbook.md) for all table relationships, policies, existing-Auth-user repair steps, and the exact application order. Do not apply the staff mobile PREPARE_ONLY migration as part of the corrected foundation.
 
 ## Connection guidance
 
