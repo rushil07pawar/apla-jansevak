@@ -27,13 +27,14 @@ npm run build
 In the target project, use the Supabase Dashboard SQL Editor with an administrator account. Each query below is read-only.
 
 ```sql
--- Tables expected from the corrected foundation migration
+-- Application tables expected after the foundation and staff-management migrations
 select tablename, rowsecurity
 from pg_tables
 where schemaname = 'public'
   and tablename in ('departments', 'wards', 'profiles', 'staff_profiles',
                     'staff_ward_assignments', 'complaints',
-                    'complaint_assignments', 'complaint_status_history')
+                    'complaint_assignments', 'complaint_status_history',
+                    'staff_hierarchy', 'staff_permissions', 'admin_audit_logs')
 order by tablename;
 
 -- Expected application indexes
@@ -41,7 +42,8 @@ select indexname, indexdef
 from pg_indexes
 where schemaname = 'public'
   and tablename in ('complaints', 'staff_ward_assignments',
-                    'complaint_assignments', 'complaint_status_history')
+                    'complaint_assignments', 'complaint_status_history',
+                    'staff_hierarchy', 'staff_permissions', 'admin_audit_logs')
 order by tablename, indexname;
 
 -- Review policies, including storage policies
@@ -49,7 +51,8 @@ select schemaname, tablename, policyname, cmd, roles, qual, with_check
 from pg_policies
 where (schemaname = 'public' and tablename in ('departments', 'wards', 'profiles',
        'staff_profiles', 'staff_ward_assignments', 'complaints',
-       'complaint_assignments', 'complaint_status_history'))
+       'complaint_assignments', 'complaint_status_history',
+       'staff_hierarchy', 'staff_permissions', 'admin_audit_logs'))
    or (schemaname = 'storage' and tablename = 'objects')
 order by schemaname, tablename, policyname;
 
@@ -61,7 +64,7 @@ group by datname, usename, application_name, state
 order by connections desc;
 ```
 
-For a meaningful RLS check, create disposable test users in a non-production project. Verify that citizen A cannot select or update citizen B's complaint; staff cannot access a complaint without both the matching department and an active ward assignment; and an explicitly authorized administrator can access complaints. Verify that staff cannot change their own staff profile or ward assignments through the client. A citizen should upload only to their own complaint path, and staff outside its department/ward and citizens other than the owner must not download its linked photo. Browser role checks do not replace these database checks.
+For a meaningful RLS check, create disposable test users in a non-production project. Verify that citizen A cannot select or update citizen B's complaint; staff cannot access a complaint without the matching department, active ward assignment, and explicit `complaints.read` grant; and only the active, approved Main System Administrator can access across departments. Verify that staff cannot change their own staff profile, hierarchy, permissions, or ward assignments through the client. A citizen should upload only to their own complaint path, and staff outside its authorized department/ward and citizens other than the owner must not download its linked photo. Exercise status changes, assignments, and escalations through the server and verify each event is written to history. Browser role checks do not replace these database checks.
 
 See the [database migration runbook](database-migration-runbook.md) for all table relationships, policies, existing-Auth-user repair steps, and the exact application order. Do not apply the staff mobile PREPARE_ONLY migration as part of the corrected foundation.
 

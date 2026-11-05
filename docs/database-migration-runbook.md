@@ -19,7 +19,7 @@ Indexes cover complaint ownership and department/ward access, ward assignment lo
 
 ## RLS policies
 
-RLS is enabled on all eight public application tables. `anon` has no table grants or policies; authenticated users receive only the listed grants.
+RLS is enabled on all eight public application tables created by the foundation. The later additive staff-management migration adds three more RLS-enabled tables. `anon` has no table grants or policies; authenticated users receive only the listed grants.
 
 | Table | Policy and effect |
 |---|---|
@@ -32,7 +32,7 @@ RLS is enabled on all eight public application tables. `anon` has no table grant
 | `complaint_assignments` | `read own or authorized complaint assignments`: the assignee, owning citizen, or staff/admin authorized for the complaint may read it. No client mutation grants or policies. |
 | `complaint_status_history` | `read own or authorized complaint history`: the owning citizen or staff/admin authorized for the complaint may read it. No client mutation grants or policies. |
 
-The security-definer authorization helpers use a fixed empty `search_path`, are not executable by `anon`, and check the caller's Auth id. A staff member must be active, approved, not forced to change a password, assigned to the complaint's active ward, and in its department. An administrator must have an `administrator` staff profile that is active, approved, and not forced to change a password; this is the explicit all-ward complaint authorization path.
+The security-definer authorization helpers use a fixed empty `search_path`, are not executable by `anon`, and check the caller's Auth id. Under the foundation alone, a staff member must be active, approved, not forced to change a password, assigned to the complaint's active ward, and in its department. After applying the staff-management add-on, the staff member also requires an explicit `complaints.read` grant scoped to that department and ward. The add-on narrows cross-department access to the single, explicitly designated Main System Administrator; an ordinary `administrator` role does not grant global access.
 
 There are no browser policies to create or alter staff profiles, department membership, ward assignments, complaint assignments, complaint status, or status history. Provisioning and workflow writes must go through a trusted, server-side process that independently verifies the administrator. RLS is still enforced for normal publishable-key requests; a service-role key bypasses RLS and must never be shipped to a browser.
 
@@ -42,7 +42,7 @@ There are no browser policies to create or alter staff profiles, department memb
 
 The browser sends these fields as Auth `options.data`. A trigger failure makes `auth.signUp` return a non-null `error` (GoTrue may present a database-trigger failure as a generic Auth error rather than exposing the SQL message). The existing `registerCitizen` helper throws that error, so the UI must show a safe registration failure/validation message and must not report success unless `error` is null.
 
-The trigger applies to every new Auth user, including staff provisioned through Auth. Therefore the authorized staff-provisioning process must also provide valid profile metadata (including a unique username) when it calls Supabase Auth. Staff mobile sign-in still uses the Auth phone/password flow; the staff profile stores only the unique mobile identifier and authorization state, never the password.
+Before the staff-management add-on is applied, the trigger applies to every new Auth user. The add-on changes it to skip citizen-profile creation only when a trusted server-created Auth user has `app_metadata.account_type = 'staff'`; public user metadata cannot set that Auth-controlled field. Staff mobile sign-in still uses the Auth phone/password flow; the staff profile stores only the unique mobile identifier and authorization state, never the password. See [staff-management.md](staff-management.md) for the additive schema, bootstrap, and application sequence.
 
 ## Preserve and repair an existing Auth user
 
@@ -71,10 +71,11 @@ The placeholder values must be replaced with verified values satisfying the migr
 
 1. Confirm the Dashboard is connected to the intended Supabase project. Verify that `public` has no AplaJansevak application tables and record the existing Auth user's UUID. Do not delete the Auth user. The migration adds restrictive guards for `complaint-photos` because PostgreSQL permissive storage policies otherwise combine with OR semantics.
 2. Ensure the project has the required Supabase Auth configuration. Staff phone/password login requires Phone Auth and a compliant SMS provider; provision staff only through an authorized server/admin process. Do not expose the service-role/secret key in frontend code.
-3. Open **Supabase Dashboard → SQL Editor**, review the entire corrected foundation migration, and run that one file once. Do not run the old foundation contents separately, and do not run `20261105_002_staff_mobile_auth_PREPARE_ONLY.sql`; it is not part of this migration sequence.
+3. If the foundation has not yet been applied, open **Supabase Dashboard → SQL Editor**, review the corrected foundation migration, and run that file once. If it is already applied, do not rerun it. Do not run the old foundation contents separately, and do not run `20261105_002_staff_mobile_auth_PREPARE_ONLY.sql`.
 4. If the project already has an Auth user, repair its profile as described above after the schema and trigger have been created. The Auth user itself is preserved.
-5. Add only verified department records through an authorized process. Ward 06 is already seeded as the pilot designation. Provision staff Auth users with the required metadata first, then create their staff profiles and ward assignments through a trusted administrator workflow. Grant approval only after verification.
-6. Verify tables, grants, RLS policies, helper-function privileges, and the private bucket using read-only checks. In a non-production project, test citizen isolation, department-plus-ward access, administrator access, assignment restrictions, and photo upload/read/delete rules before enabling complaint workflows.
+5. To enable the hierarchy and staff-management feature, review and manually run `20261106_003_staff_management.sql` once. It is additive and does not create staff accounts or designate an administrator.
+6. Follow the [staff-management bootstrap instructions](staff-management.md#apply-and-bootstrap-order) to designate the first Main System Administrator using an explicitly verified Auth identity. Require a verified mobile and complete password recovery before using the protected endpoints.
+7. Verify tables, grants, RLS policies, helper-function privileges, and the private bucket using read-only checks. In a non-production project, test citizen isolation, department/ward permission scopes, Main System Administrator access, assignment restrictions, and photo upload/read/delete rules before enabling complaint workflows.
 
 No SQL is executed by the application. Do not apply the staff mobile PREPARE_ONLY migration automatically or as part of this sequence.
 

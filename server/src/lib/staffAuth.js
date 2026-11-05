@@ -52,9 +52,10 @@ export async function activeStaff(config, userId, mobile) {
 }
 
 export async function startPhoneRecovery(config, mobile) {
-  await supabaseRequest(config, '/auth/v1/otp', {
+  const response = await supabaseRequest(config, '/auth/v1/otp', {
     method: 'POST', headers: { apikey: config.publishableKey, 'content-type': 'application/json' }, body: JSON.stringify({ phone: mobile, create_user: false })
   })
+  if (!response.ok) throw new Error('Supabase could not send a password setup code to this mobile number.')
 }
 
 export async function completePhoneRecovery(config, mobile, token, password) {

@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { BrowserRouter, Link, Navigate, Route, Routes, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
-import { ArrowRight, CheckCircle2, ImagePlus, LogIn, MapPin, RefreshCw, ShieldCheck, UserPlus } from 'lucide-react'
-import { getCitizenIdentity, registerCitizen, signInCitizen, signInStaff, requestStaffPasswordRecovery } from './lib/auth'
+import { ArrowRight, CheckCircle2, ImagePlus, LogIn, MapPin, RefreshCw, Search, ShieldCheck, UserPlus } from 'lucide-react'
+import { completeStaffPasswordRecovery, getCitizenIdentity, registerCitizen, signInCitizen, signInStaff, requestStaffPasswordRecovery } from './lib/auth'
 import { complaintCategories, getComplaint, submitComplaint } from './lib/complaints'
+import { createStaffAccount, getAdminAuditLogs, getAdminDepartments, getAdminStaff, getAdminWards, getStaffDashboard, resetStaffPassword, setStaffAccountActive, takeComplaintAction, updateStaffAccount } from './lib/staffManagement'
 import { isSupabaseConfigured, requireSupabase } from './lib/supabaseClient'
 import './App.css'
 
@@ -216,6 +217,9 @@ function Auth({ register = false }) {
 function StaffAuth() {
   const [mobile, setMobile] = useState('')
   const [password, setPassword] = useState('')
+  const [token, setToken] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [recoveryMode, setRecoveryMode] = useState(false)
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
   const navigate = useNavigate()
@@ -225,6 +229,18 @@ function StaffAuth() {
     setBusy(true)
     setMessage('')
     try {
+      if (recoveryMode) {
+        if (!/^\d{6}$/.test(token) || password.length < 12 || password !== confirmPassword) {
+          setMessage('Enter the six-digit code and matching passwords of at least 12 characters.')
+          return
+        }
+        setMessage(await completeStaffPasswordRecovery({ mobile, token, password }))
+        setPassword('')
+        setConfirmPassword('')
+        setToken('')
+        setRecoveryMode(false)
+        return
+      }
       const result = await signInStaff({ mobile, password })
       if (result.staff.force_password_change) {
         setMessage('Your temporary password must be changed before accessing staff services. Use the recovery option or contact your administrator.')
@@ -243,6 +259,7 @@ function StaffAuth() {
     setMessage('')
     try {
       setMessage(await requestStaffPasswordRecovery(mobile))
+      setRecoveryMode(true)
     } catch (error) {
       setMessage(error.message || 'Unable to request password recovery.')
     } finally {
@@ -260,19 +277,20 @@ function StaffAuth() {
         </div>
         <form className="form-card" onSubmit={handleSubmit} noValidate>
           <label className="field">
-            <span>Mobile number</span>
-            <input type="tel" inputMode="tel" autoComplete="username" placeholder="+919876543210" value={mobile} onChange={event => setMobile(event.target.value)} required />
+            <span>Registered mobile number</span>
+            <input type="tel" inputMode="tel" autoComplete="username" placeholder="+919876543210" value={mobile} onChange={event => setMobile(event.target.value)} required readOnly={recoveryMode} />
           </label>
-          <label className="field">
-            <span>Password</span>
-            <input type="password" autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} required />
-          </label>
-          <button className="button button-primary form-submit" type="submit" disabled={busy || !mobile || !password}>
-            {busy ? 'Please wait…' : 'Staff Login'} <ArrowRight size={18} />
-          </button>
-          <button className="text-button recovery-button" type="button" disabled={busy || !mobile} onClick={handleRecovery}>
-            Forgot password?
-          </button>
+          {recoveryMode ? <>
+            <label className="field"><span>SMS verification code</span><input inputMode="numeric" autoComplete="one-time-code" value={token} onChange={event => setToken(event.target.value.replace(/\D/g, '').slice(0, 6))} required /></label>
+            <label className="field"><span>New password (at least 12 characters)</span><input type="password" autoComplete="new-password" value={password} onChange={event => setPassword(event.target.value)} required /></label>
+            <label className="field"><span>Confirm new password</span><input type="password" autoComplete="new-password" value={confirmPassword} onChange={event => setConfirmPassword(event.target.value)} required /></label>
+            <button className="button button-primary form-submit" type="submit" disabled={busy || token.length !== 6 || password.length < 12 || password !== confirmPassword}>{busy ? 'Please wait…' : 'Set new password'} <ArrowRight size={18} /></button>
+            <button className="text-button recovery-button" type="button" disabled={busy} onClick={() => { setRecoveryMode(false); setMessage('') }}>Return to staff login</button>
+          </> : <>
+            <label className="field"><span>Password</span><input type="password" autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} required /></label>
+            <button className="button button-primary form-submit" type="submit" disabled={busy || !mobile || !password}>{busy ? 'Please wait…' : 'Staff Login'} <ArrowRight size={18} /></button>
+            <button className="text-button recovery-button" type="button" disabled={busy || !mobile} onClick={handleRecovery}>Forgot password?</button>
+          </>}
           {message && <p className="notice" role="status">{message}</p>}
         </form>
       </section>
@@ -580,79 +598,61 @@ function TrackComplaint() {
 
 function StaffDashboard() {
   const [state, setState] = useState({ status: 'loading' })
+  const [onlyAssigned, setOnlyAssigned] = useState(false)
   const navigate = useNavigate()
 
   useEffect(() => {
     let active = true
-    async function loadDashboard() {
-      try {
-        const client = requireSupabase()
-        const { data: { user }, error: userError } = await client.auth.getUser()
-        if (userError) throw userError
-        if (!user) {
-          if (active) setState({ status: 'unauthenticated' })
-          return
-        }
-
-        const { data: staff, error: staffError } = await client
-          .from('staff_profiles')
-          .select('user_id, department_id, role, active, approved, force_password_change')
-          .eq('user_id', user.id)
-          .maybeSingle()
-        if (staffError) throw staffError
-        if (!staff) {
-          const identity = await getCitizenIdentity()
-          if (active && identity.profile) setState({ status: 'citizen' })
-          return
-        }
-        if (!staff.active || !staff.approved || staff.force_password_change) {
-          if (active) setState({ status: 'blocked' })
-          return
-        }
-
-        const { data: assignments, error: assignmentsError } = await client
-          .from('staff_ward_assignments')
-          .select('ward_id')
-          .eq('staff_user_id', user.id)
-        if (assignmentsError) throw assignmentsError
-        const wardIds = assignments.map(assignment => assignment.ward_id)
-        let wards = []
-        if (wardIds.length) {
-          const { data, error } = await client
-            .from('wards')
-            .select('id, ward_number, ward_name')
-            .in('id', wardIds)
-            .eq('is_active', true)
-          if (error) throw error
-          wards = data || []
-        }
-        if (staff.role !== 'administrator' && !wards.length) {
-          if (active) setState({ status: 'no-wards' })
-          return
-        }
-        if (active) setState({ status: 'authorized', staff, wards })
-      } catch (error) {
+    getStaffDashboard()
+      .then(data => { if (active) setState({ status: 'authorized', ...data }) })
+      .catch(error => {
         if (active) setState({ status: 'error', message: error.message || 'Unable to verify staff authorization.' })
-      }
-    }
-    loadDashboard()
+      })
     return () => { active = false }
   }, [])
 
+  async function runAction(complaintId, action) {
+    setState(current => ({ ...current, busyId: complaintId, actionMessage: '' }))
+    try {
+      await takeComplaintAction(complaintId, action)
+      const data = await getStaffDashboard()
+      setState({ status: 'authorized', ...data, actionMessage: 'Complaint activity recorded.' })
+    } catch (error) {
+      setState(current => ({ ...current, busyId: null, actionMessage: error.message }))
+    }
+  }
+
+  async function openComplaintPhoto(complaintId, photoPath) {
+    try {
+      const { data, error } = await requireSupabase()
+        .storage.from('complaint-photos')
+        .createSignedUrl(photoPath, 60)
+      if (error) throw error
+      setState(current => ({
+        ...current,
+        photoLinks: { ...current.photoLinks, [complaintId]: data.signedUrl },
+      }))
+    } catch (error) {
+      setState(current => ({ ...current, actionMessage: error.message || 'Unable to open this authorized complaint photo.' }))
+    }
+  }
+
+  const visibleComplaints = state.status === 'authorized'
+    ? state.complaints.filter(complaint =>
+      !onlyAssigned || complaint.assignments.some(assignment =>
+        assignment.staff_user_id === state.staff.user_id && !assignment.unassigned_at,
+      ),
+    )
+    : []
+
   if (state.status === 'loading') return <Layout><LoadingPage text="Verifying staff authorization…" /></Layout>
-  if (state.status === 'unauthenticated') return <Navigate to="/staff-login" replace />
-  if (state.status === 'citizen') return <Navigate to="/complaints/new" replace />
   if (state.status !== 'authorized') {
     return (
       <Layout>
         <section className="result-card">
           <p className="eyebrow">Staff access</p>
           <h1>Access could not be verified</h1>
-          <p className="notice notice-error" role="alert">
-            {state.status === 'blocked' ? 'This account is inactive, unapproved, or must change its password before access.' :
-              state.status === 'no-wards' ? 'No active ward assignment is available for this account. Contact an administrator.' :
-                state.message || 'Please sign in with an authorized municipal staff account.'}
-          </p>
+          <p className="notice notice-error" role="alert">{state.message}</p>
           <button className="button button-secondary" type="button" onClick={async () => { await requireSupabase().auth.signOut(); navigate('/staff-login', { replace: true }) }}>Return to staff login</button>
         </section>
       </Layout>
@@ -663,15 +663,295 @@ function StaffDashboard() {
     <Layout>
       <section className="details-card staff-dashboard">
         <p className="eyebrow">Authorized staff dashboard</p>
-        <h1>Municipal Staff Access</h1>
-        <p>Your access is verified from your authenticated staff profile and current ward assignments.</p>
+        <h1>Complaint Work Queue</h1>
+        <p>Complaint records are limited by your active department, ward, and database-authorized permissions.</p>
         <dl className="details-list">
           <div><dt>Role</dt><dd>{state.staff.role}</dd></div>
-          <div><dt>Department ID</dt><dd>{state.staff.department_id}</dd></div>
-          <div><dt>Authorized wards</dt><dd>{state.staff.role === 'administrator' ? 'Administrator access across wards' : state.wards.map(ward => `Ward ${String(ward.ward_number).padStart(2, '0')}`).join(', ')}</dd></div>
+          <div><dt>Department</dt><dd>{state.departments.find(department => department.id === state.staff.department_id)?.name || 'Cross-department administrator'}</dd></div>
         </dl>
-        <p className="field-hint">Complaint routing and staff work queues are not configured in the current application.</p>
+        <div className="work-stat-grid">
+          {[['Assigned to me', state.stats.assigned], ['Pending', state.stats.pending], ['Submitted', state.stats.submitted], ['In progress', state.stats.in_progress], ['Resolved', state.stats.resolved], ['Visible total', state.stats.total]].map(([label, value]) => <div key={label}><span>{label}</span><strong>{value}</strong></div>)}
+        </div>
+        {state.staff.is_main_system_admin && state.complaints.length > 0 && <div className="department-statistics"><h2>Department complaint counts</h2>{state.departments.map(department => {
+          const count = state.complaints.filter(complaint => complaint.department_id === department.id).length
+          return <p key={department.id}><strong>{department.name_mr}</strong> · {department.name}: {count}</p>
+        })}{state.complaints.some(complaint => !complaint.department_id) && <p><strong>Unrouted (manual review required)</strong>: {state.complaints.filter(complaint => !complaint.department_id).length}</p>}<p className="field-hint">Overdue tracking is unavailable until an approved due-date/SLA rule exists.</p></div>}
+        {state.staff.is_main_system_admin && <button className="button button-secondary" type="button" onClick={() => navigate('/staff/management')}>Open staff and department management</button>}
+        {state.actionMessage && <p className="notice" role="status">{state.actionMessage}</p>}
+        <div className="queue-filters"><button type="button" className={onlyAssigned ? 'button button-primary' : 'button button-secondary'} aria-pressed={onlyAssigned} onClick={() => setOnlyAssigned(value => !value)}>{onlyAssigned ? 'Showing my assigned complaints' : 'Show only complaints assigned to me'}</button></div>
+        <div className="work-queue">
+          {visibleComplaints.length ? visibleComplaints.map(complaint => {
+            const activeAssignment = complaint.assignments.find(assignment => !assignment.unassigned_at)
+            const department = state.departments.find(item => item.id === complaint.department_id)
+            const ward = state.wards.find(item => item.id === complaint.ward_id)
+            return (
+              <article className="work-card" key={complaint.id}>
+                <div className="work-card-heading">
+                  <div><p className="eyebrow">{complaint.category} · {department?.name || 'Unrouted'} · Ward {ward ? String(ward.ward_number).padStart(2, '0') : complaint.ward_id}</p><h2>{complaint.title}</h2></div>
+                  <span className="status-pill">{complaint.status.replaceAll('_', ' ')}</span>
+                </div>
+                <p>{complaint.description}</p>
+                <p className="field-hint">Reference {complaint.id} · Submitted {new Date(complaint.created_at).toLocaleString()}</p>
+                {Number.isFinite(Number(complaint.latitude)) && Number.isFinite(Number(complaint.longitude)) &&
+                  <p className="field-hint">Location: {Number(complaint.latitude).toFixed(6)}, {Number(complaint.longitude).toFixed(6)}</p>}
+                {complaint.photo_path && (
+                  <div className="work-photo">
+                    {state.photoLinks?.[complaint.id]
+                      ? <a href={state.photoLinks[complaint.id]} target="_blank" rel="noreferrer">Open private complaint photo</a>
+                      : <button className="text-button" type="button" onClick={() => openComplaintPhoto(complaint.id, complaint.photo_path)}>View authorized photo</button>}
+                  </div>
+                )}
+                <p className="field-hint">Assigned to: {activeAssignment?.staff?.full_name_mr || activeAssignment?.staff?.full_name_en || 'Unassigned'}</p>
+                {state.staff.canRoute && !complaint.department_id && (
+                  <form className="work-action route-action" onSubmit={event => {
+                    event.preventDefault()
+                    const departmentId = new FormData(event.currentTarget).get('department')
+                    if (departmentId) runAction(complaint.id, { action: 'route', department_id: departmentId, note: 'Manually routed by an authorized administrator.' })
+                  }}>
+                    <label className="field"><span>Manual department routing (review complaint details)</span><select name="department" required defaultValue=""><option value="" disabled>Select department</option>{state.departments.map(item => <option key={item.id} value={item.id}>{item.name_mr} · {item.name}</option>)}</select></label>
+                    <button className="button button-secondary" disabled={state.busyId === complaint.id}>Route complaint</button>
+                  </form>
+                )}
+                {state.staff.canUpdate && (
+                  <form className="work-action" onSubmit={event => {
+                    event.preventDefault()
+                    const form = new FormData(event.currentTarget)
+                    runAction(complaint.id, { action: 'status', status: form.get('status'), note: form.get('note') })
+                  }}>
+                    <label className="field"><span>Update status</span><select name="status" defaultValue={complaint.status === 'submitted' ? 'acknowledged' : complaint.status === 'acknowledged' ? 'in_progress' : complaint.status}><option value="acknowledged">Acknowledged</option><option value="in_progress">In progress</option><option value="resolved">Resolved</option><option value="closed">Closed</option><option value="rejected">Rejected</option></select></label>
+                    <label className="field"><span>Status note (visible to the complaint owner)</span><input name="note" maxLength="2000" /></label>
+                    <button className="button button-secondary" disabled={state.busyId === complaint.id}>Save status</button>
+                  </form>
+                )}
+                {state.staff.canAssign && complaint.staffOptions?.length > 0 && (
+                  <form className="work-action" onSubmit={event => {
+                    event.preventDefault()
+                    const assignee = new FormData(event.currentTarget).get('assignee')
+                    if (assignee) runAction(complaint.id, { action: 'assign', assignee_id: assignee })
+                  }}>
+                    <label className="field"><span>Assign to authorized staff</span><select name="assignee" defaultValue=""><option value="" disabled>Select officer</option>{complaint.staffOptions.map(option => <option key={option.user_id} value={option.user_id}>{option.full_name_mr || option.full_name_en || option.staff_id || option.user_id}</option>)}</select></label>
+                    <button className="button button-secondary" disabled={state.busyId === complaint.id}>Assign complaint</button>
+                  </form>
+                )}
+                {state.staff.canEscalate && state.staff.managerId && (
+                  <button className="button button-secondary" type="button" disabled={state.busyId === complaint.id} onClick={() => runAction(complaint.id, { action: 'escalate', assignee_id: state.staff.managerId, note: 'Escalated to the configured reporting officer.' })}>Escalate to reporting officer</button>
+                )}
+                {!!complaint.history.length && <details className="activity-history"><summary>Assignment and status history</summary><ol>{complaint.history.map((item, index) => <li key={`${item.created_at}-${index}`}><strong>{item.event_type}</strong> · {item.actor?.full_name_mr || item.actor?.full_name_en || 'Authorized staff'} · {new Date(item.created_at).toLocaleString()}{item.note && <p>{item.note}</p>}{item.previousAssignee && <span>From {item.previousAssignee.full_name_mr || item.previousAssignee.full_name_en}; </span>}{item.newAssignee && <span>to {item.newAssignee.full_name_mr || item.newAssignee.full_name_en}</span>}</li>)}</ol></details>}
+              </article>
+            )
+          }) : <p className="field-hint">{onlyAssigned ? 'No complaints are assigned to this account.' : 'No complaints are currently visible to this account’s department, ward, and permissions.'}</p>}
+        </div>
         <button className="button button-secondary" type="button" onClick={async () => { await requireSupabase().auth.signOut(); navigate('/', { replace: true }) }}>Sign out</button>
+      </section>
+    </Layout>
+  )
+}
+
+function emptyStaffProfile() {
+  return {
+    staff_id: '', full_name_mr: '', full_name_en: '', designation_mr: '', designation_en: '',
+    department_id: '', mobile_e164: '', official_contact_number: '', role: 'staff',
+    active: true, profile_verified: false, ward_ids: [], permissions: [], reports_to_user_id: '',
+  }
+}
+
+function StaffManagement() {
+  const [state, setState] = useState({ status: 'loading', departments: [], wards: [], staff: [], logs: [] })
+  const [profile, setProfile] = useState(emptyStaffProfile)
+  const [editingId, setEditingId] = useState('')
+  const [search, setSearch] = useState('')
+  const [departmentFilter, setDepartmentFilter] = useState('')
+  const [tab, setTab] = useState('directory')
+  const [message, setMessage] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  async function fetchDirectory() {
+    const [departments, wards, staff, logs] = await Promise.all([
+      getAdminDepartments(), getAdminWards(), getAdminStaff(), getAdminAuditLogs(),
+    ])
+    return { status: 'loaded', departments, wards, staff, logs }
+  }
+
+  async function load() {
+    try { setState(await fetchDirectory()) }
+    catch (error) { setState(current => ({ ...current, status: 'error', message: error.message })) }
+  }
+
+  useEffect(() => {
+    let active = true
+    fetchDirectory()
+      .then(data => { if (active) setState(data) })
+      .catch(error => { if (active) setState(current => ({ ...current, status: 'error', message: error.message })) })
+    return () => { active = false }
+  }, [])
+
+  function editStaff(row) {
+    setEditingId(row.user_id)
+    setProfile({
+      staff_id: row.staff_id || '',
+      full_name_mr: row.full_name_mr || '',
+      full_name_en: row.full_name_en || '',
+      designation_mr: row.designation_mr || '',
+      designation_en: row.designation_en || '',
+      department_id: row.department_id,
+      mobile_e164: row.mobile_e164,
+      official_contact_number: row.official_contact_number,
+      role: row.role,
+      active: row.active,
+      profile_verified: row.profile_verified,
+      ward_ids: row.wards.map(ward => ward.id),
+      permissions: row.permissions.map(permission => ({ permission_code: permission.permission_code, ward_id: permission.ward_id })),
+      reports_to_user_id: row.reports_to_user_id || '',
+    })
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
+  function cancelEdit(keepMessage = false) {
+    setEditingId('')
+    setProfile(emptyStaffProfile())
+    if (!keepMessage) setMessage('')
+  }
+
+  function toggleWard(wardId) {
+    setProfile(current => {
+      const wardIds = current.ward_ids.includes(wardId)
+        ? current.ward_ids.filter(id => id !== wardId)
+        : [...current.ward_ids, wardId]
+      return {
+        ...current,
+        ward_ids: wardIds,
+        permissions: current.permissions.filter(permission => wardIds.includes(permission.ward_id)),
+      }
+    })
+  }
+
+  function togglePermission(wardId, permissionCode) {
+    setProfile(current => {
+      const exists = current.permissions.some(item => item.ward_id === wardId && item.permission_code === permissionCode)
+      return {
+        ...current,
+        permissions: exists
+          ? current.permissions.filter(item => item.ward_id !== wardId || item.permission_code !== permissionCode)
+          : [...current.permissions, { ward_id: wardId, permission_code: permissionCode }],
+      }
+    })
+  }
+
+  async function submitProfile(event) {
+    event.preventDefault()
+    if (!window.confirm(`${editingId ? 'Save changes to' : 'Create'} this staff account and its ward/permission assignments?`)) return
+    setBusy(true)
+    setMessage('')
+    try {
+      const result = editingId
+        ? await updateStaffAccount(editingId, profile)
+        : await createStaffAccount(profile)
+      setMessage(result.message || (profile.profile_verified ? 'Verified staff profile saved.' : 'Unverified staff profile saved pending administrator review.'))
+      cancelEdit(true)
+      await load()
+    } catch (error) {
+      setMessage(error.message || 'Unable to save this staff profile.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function toggleActive(row) {
+    const active = !row.active
+    if (!window.confirm(`${active ? 'Activate' : 'Deactivate'} this staff account?`)) return
+    setBusy(true)
+    try {
+      await setStaffAccountActive(row.user_id, active)
+      setMessage(`Staff account ${active ? 'activated' : 'deactivated'}.`)
+      await load()
+    } catch (error) {
+      setMessage(error.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function resetPassword(row) {
+    if (!window.confirm(`Send a password reset code to ${row.mobile_e164}?`)) return
+    setBusy(true)
+    try {
+      const result = await resetStaffPassword(row.user_id)
+      setMessage(result.message)
+      await load()
+    } catch (error) {
+      setMessage(error.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (state.status === 'loading') return <Layout><LoadingPage text="Verifying administrator access…" /></Layout>
+  if (state.status === 'error') return <Layout><section className="result-card"><p className="eyebrow">Staff administration</p><h1>Access could not be verified</h1><p className="notice notice-error" role="alert">{state.message}</p><Link className="button button-secondary" to="/staff/dashboard">Return to dashboard</Link></section></Layout>
+
+  const query = search.trim().toLocaleLowerCase()
+  const visibleStaff = state.staff.filter(row => {
+    const matchesDepartment = !departmentFilter || row.department_id === departmentFilter
+    const text = [row.staff_id, row.full_name_mr, row.full_name_en, row.designation_mr, row.designation_en].join(' ').toLocaleLowerCase()
+    return matchesDepartment && (!query || text.includes(query))
+  })
+  const permissionNames = [
+    ['complaints.read', 'Read complaints'],
+    ['complaints.update', 'Update status'],
+    ['complaints.assign', 'Assign complaints'],
+    ['complaints.escalate', 'Escalate'],
+  ]
+
+  function renderHierarchy(rows, parentId = null, depth = 0) {
+    const children = rows.filter(row => parentId
+      ? row.reports_to_user_id === parentId
+      : !row.reports_to_user_id || !rows.some(candidate => candidate.user_id === row.reports_to_user_id))
+    if (!children.length) return null
+    return <ul className="hierarchy-list">{children.map(row => {
+      const reportsTo = rows.find(candidate => candidate.user_id === row.reports_to_user_id)
+      return <li key={row.user_id}><article className="directory-person" style={{ '--tree-depth': depth }}><div><strong>{row.full_name_mr || row.full_name_en || 'Name pending verification'}</strong>{row.full_name_mr && row.full_name_en && <span>{row.full_name_en}</span>}<small>{row.designation_mr || row.designation_en || 'Designation pending verification'}{row.staff_id ? ` · ${row.staff_id}` : ''}{reportsTo && ` · Reports to ${reportsTo.full_name_mr || reportsTo.full_name_en || reportsTo.staff_id}`}</small><small>Official contact: {row.official_contact_number || 'Not recorded'}</small></div><span className={row.active && row.approved ? 'staff-status status-active' : 'staff-status'}>{row.active && row.approved ? 'Active' : row.active ? 'Pending verification' : 'Inactive'}</span><div className="directory-actions"><button type="button" className="text-button" onClick={() => editStaff(row)}>Edit</button><button type="button" className="text-button" disabled={busy} onClick={() => toggleActive(row)}>{row.active ? 'Deactivate' : 'Activate'}</button><button type="button" className="text-button" disabled={busy || !row.active || !row.approved} onClick={() => resetPassword(row)}>Reset password</button></div></article>{renderHierarchy(rows, row.user_id, depth + 1)}</li>
+    })}</ul>
+  }
+
+  return (
+    <Layout>
+      <section className="management-page">
+        <header className="management-heading"><div><p className="eyebrow">Restricted administrator access</p><h1>Department and Staff Management</h1><p>Only the Main System Administrator can manage accounts, reporting relationships, wards, and permissions.</p></div><button className="button button-secondary" type="button" onClick={() => window.location.assign('/staff/dashboard')}>Staff dashboard</button></header>
+        <div className="management-tabs" aria-label="Staff management sections"><button type="button" aria-pressed={tab === 'directory'} onClick={() => setTab('directory')}>Department directory</button><button type="button" aria-pressed={tab === 'audit'} onClick={() => setTab('audit')}>Audit log</button></div>
+        {message && <p className="notice" role="status">{message}</p>}
+        {tab === 'directory' ? <>
+          <form className="form-card staff-editor" onSubmit={submitProfile}>
+            <h2>{editingId ? 'Edit staff profile' : 'Create staff account'}</h2>
+            <p className="field-hint">A new account is created in Supabase Auth using a random undisclosed temporary credential. The staff member receives a phone verification code to set their own password.</p>
+            <div className="management-form-grid">
+              <label className="field"><span>Staff ID</span><input value={profile.staff_id} onChange={event => setProfile({ ...profile, staff_id: event.target.value })} maxLength="80" /></label>
+              <label className="field"><span>Department</span><select required value={profile.department_id} onChange={event => setProfile({ ...profile, department_id: event.target.value, reports_to_user_id: '' })}><option value="">Select department</option>{state.departments.map(department => <option key={department.id} value={department.id}>{department.name_mr} · {department.name}</option>)}</select></label>
+              <label className="field"><span>Full name (Marathi)</span><input value={profile.full_name_mr} onChange={event => setProfile({ ...profile, full_name_mr: event.target.value })} /></label>
+              <label className="field"><span>Full name (English)</span><input value={profile.full_name_en} onChange={event => setProfile({ ...profile, full_name_en: event.target.value })} /></label>
+              <label className="field"><span>Designation (Marathi)</span><input value={profile.designation_mr} onChange={event => setProfile({ ...profile, designation_mr: event.target.value })} /></label>
+              <label className="field"><span>Designation (English)</span><input value={profile.designation_en} onChange={event => setProfile({ ...profile, designation_en: event.target.value })} /></label>
+              <label className="field"><span>Staff login mobile (India)</span><input type="tel" placeholder="+919876543210" required disabled={Boolean(editingId)} value={profile.mobile_e164} onChange={event => setProfile({ ...profile, mobile_e164: event.target.value })} /></label>
+              <label className="field"><span>Official contact number</span><input type="tel" placeholder="+919876543210" value={profile.official_contact_number} onChange={event => setProfile({ ...profile, official_contact_number: event.target.value })} /></label>
+              <label className="field"><span>Account role</span><select value={profile.role} onChange={event => setProfile({ ...profile, role: event.target.value })}><option value="staff">Staff</option><option value="supervisor">Supervisor</option><option value="administrator">Administrator (not Main System Administrator)</option></select></label>
+              <label className="field"><span>Reporting officer</span><select value={profile.reports_to_user_id} onChange={event => setProfile({ ...profile, reports_to_user_id: event.target.value })}><option value="">No reporting officer configured</option>{state.staff.filter(row => row.department_id === profile.department_id && row.user_id !== editingId && row.active && row.approved && !row.force_password_change).map(row => <option key={row.user_id} value={row.user_id}>{row.full_name_mr || row.full_name_en || row.staff_id}</option>)}</select></label>
+            </div>
+            <fieldset className="management-fieldset"><legend>Authorized wards</legend><div className="ward-checkboxes">{state.wards.map(ward => <label key={ward.id}><input type="checkbox" checked={profile.ward_ids.includes(ward.id)} disabled={!ward.is_active && !profile.ward_ids.includes(ward.id)} onChange={() => toggleWard(ward.id)} /> Ward {String(ward.ward_number).padStart(2, '0')} · {ward.ward_name}{!ward.is_active && ' (inactive)'}</label>)}</div></fieldset>
+            <fieldset className="management-fieldset"><legend>Permissions by assigned ward</legend>{profile.ward_ids.map(wardId => {
+              const ward = state.wards.find(item => item.id === wardId)
+              return <div className="permission-ward" key={wardId}><strong>Ward {String(ward?.ward_number || '').padStart(2, '0')}</strong><div className="permission-checkboxes">{permissionNames.map(([code, label]) => <label key={code}><input type="checkbox" checked={profile.permissions.some(item => item.ward_id === wardId && item.permission_code === code)} onChange={() => togglePermission(wardId, code)} />{label}</label>)}</div></div>
+            })}{!profile.ward_ids.length && <p className="field-hint">Choose wards before granting complaint permissions.</p>}</fieldset>
+            <label className="verification-check"><input type="checkbox" checked={profile.profile_verified} onChange={event => setProfile({ ...profile, profile_verified: event.target.checked })} /><span>Names, staff ID, designation, and reporting details have been verified against the official directory. Unverified profiles remain unapproved.</span></label>
+            <label className="verification-check"><input type="checkbox" checked={profile.active} onChange={event => setProfile({ ...profile, active: event.target.checked })} /><span>Account active</span></label>
+            <div className="editor-actions"><button className="button button-primary" type="submit" disabled={busy || !profile.department_id || !profile.mobile_e164}>{busy ? 'Saving…' : editingId ? 'Save staff changes' : 'Create staff account'}</button>{editingId && <button className="button button-secondary" type="button" onClick={cancelEdit}>Cancel</button>}</div>
+          </form>
+          <div className="directory-controls">
+            <label className="field"><span>Search staff by name, ID, or designation</span><div className="search-field"><Search size={18} /><input value={search} onChange={event => setSearch(event.target.value)} /></div></label>
+            <label className="field"><span>Filter department</span><select value={departmentFilter} onChange={event => setDepartmentFilter(event.target.value)}><option value="">All departments</option>{state.departments.map(department => <option key={department.id} value={department.id}>{department.name_mr} · {department.name}</option>)}</select></label>
+          </div>
+          <div className="department-directory">{state.departments.filter(department => !departmentFilter || department.id === departmentFilter).map(department => {
+            const rows = visibleStaff.filter(row => row.department_id === department.id)
+            return <section className="department-card" key={department.id}><h2>{department.name_mr}</h2><p>{department.name}</p>{rows.length ? renderHierarchy(rows) : <p className="field-hint">No directory entries match this filter. Add staff only from a verified official source.</p>}</section>
+          })}</div>
+        </> : <section className="audit-list"><h2>Recent administrative changes</h2>{state.logs.length ? state.logs.map(log => <article key={log.id}><strong>{log.action}</strong><span>{log.target_type} {log.target_id || ''}</span><time>{new Date(log.created_at).toLocaleString()}</time><pre>{JSON.stringify(log.details, null, 2)}</pre></article>) : <p>No audit events recorded.</p>}</section>}
       </section>
     </Layout>
   )
@@ -685,6 +965,7 @@ function AppRoutes() {
       <Route path="/login" element={<Auth />} />
       <Route path="/staff-login" element={<StaffAuth />} />
       <Route path="/staff/dashboard" element={<StaffDashboard />} />
+      <Route path="/staff/management" element={<StaffManagement />} />
       <Route path="/complaints/new" element={<RequireCitizen><ComplaintForm /></RequireCitizen>} />
       <Route path="/complaints/:id" element={<RequireCitizen><ComplaintDetails /></RequireCitizen>} />
       <Route path="/report" element={<Navigate to="/complaints/new" replace />} />
