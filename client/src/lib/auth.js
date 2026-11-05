@@ -130,24 +130,3 @@ export async function signInStaff({ mobile, password }) {
   if (error) throw new Error('Unable to establish your secure session.')
   return data
 }
-
-export async function requestStaffPasswordRecovery(mobile) {
-  const response = await fetch(`${apiUrl}/api/staff-auth/recovery/start`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ mobile }),
-  })
-  if (!response.ok) throw new Error('Unable to request password recovery.')
-  return 'If the account is eligible, recovery instructions will be sent.'
-}
-
-export async function completeStaffPasswordRecovery({ mobile, token, password }) {
-  const response = await fetch(`${apiUrl}/api/staff-auth/recovery/complete`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ mobile, token, password }),
-  })
-  const data = await response.json().catch(() => ({}))
-  if (!response.ok) throw new Error(data.message || 'Unable to reset the password.')
-  return data.message
-}

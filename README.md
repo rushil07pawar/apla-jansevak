@@ -63,7 +63,7 @@ Use the read-only [database health-check procedure](docs/database-health-check.m
 
 Staff phone/password authentication is described in [staff-mobile-auth.md](docs/staff-mobile-auth.md). The corrected foundation already defines the staff mobile and approval fields. Do not apply [20261105_002_staff_mobile_auth_PREPARE_ONLY.sql](database/migrations/20261105_002_staff_mobile_auth_PREPARE_ONLY.sql) with this foundation.
 
-The additive [staff management migration](database/migrations/20261106_003_staff_management.sql) and its required application/bootstrap sequence are documented in [staff-management.md](docs/staff-management.md). Apply it manually only after review; no staff account, Main System Administrator, hierarchy entry, or permission grant is created automatically. The official hierarchy charts and the first administrator's verified Auth identity are still required before real directory records can be populated.
+The additive [staff management migrations](database/migrations/20261106_003_staff_management.sql) and [admin-managed staff passwords](database/migrations/20261106_004_admin_managed_staff_passwords.sql) and their application/bootstrap sequence are documented in [staff-management.md](docs/staff-management.md). Apply them manually only after review; no staff account, Main System Administrator, hierarchy entry, or permission grant is created automatically. Staff use their mobile number as username and an administrator-set password without SMS/email verification. The official hierarchy charts and the first administrator's Auth identity are still required before real directory records can be populated.
 
 ## Deployment checklist
 

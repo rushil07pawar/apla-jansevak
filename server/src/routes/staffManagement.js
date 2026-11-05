@@ -5,8 +5,7 @@ import {
   listDepartments,
   listStaffDirectory,
   listWards,
-  recordPasswordResetRequest,
-  requestStaffCredentialReset,
+  setStaffPassword,
   setStaffActive,
   updateStaffAccount,
 } from '../lib/staffManagement.js'
@@ -71,24 +70,12 @@ router.get('/audit-logs', handleAdmin(async ({ config }) => {
 
 router.post('/staff', handleAdmin(async ({ req, res, config, userId }) => {
   const result = await createStaffAccount(config, userId, req.body)
-  res.status(201).json({
-    staff: result.profile,
-    recoverySent: result.recoverySent,
-    message: result.recoverySent
-      ? 'Staff account created. A password setup code was sent to the registered mobile number.'
-      : result.recoveryMessage || 'Staff account created, but a password setup code could not be sent. Use Reset password to retry.',
-  })
+  res.status(201).json({ staff: result.profile, message: 'Staff account created. Share the password with the staff member through a secure channel.' })
 }, { action: 'staff-create', max: 10 }))
 
 router.patch('/staff/:userId', handleAdmin(async ({ req, res, config, userId }) => {
   const result = await updateStaffAccount(config, userId, req.params.userId, req.body)
-  res.json({
-    staff: result.profile,
-    recoverySent: result.recoverySent,
-    message: result.recoverySent === false
-      ? result.recoveryMessage || 'Staff profile saved, but its new mobile number did not receive a password setup code.'
-      : 'Staff profile saved.',
-  })
+  res.json({ staff: result.profile, message: 'Staff profile saved.' })
 }))
 
 router.patch('/staff/:userId/active', handleAdmin(async ({ req, res, config, userId }) => {
@@ -96,10 +83,9 @@ router.patch('/staff/:userId/active', handleAdmin(async ({ req, res, config, use
   res.json({ staff: profile })
 }))
 
-router.post('/staff/:userId/password-reset', handleAdmin(async ({ req, res, config, userId }) => {
-  await requestStaffCredentialReset(config, req.params.userId)
-  await recordPasswordResetRequest(config, userId, req.params.userId)
-  res.status(202).json({ message: 'A password setup code was sent to the registered mobile number.' })
-}, { action: 'staff-reset', max: 3 }))
+router.put('/staff/:userId/password', handleAdmin(async ({ req, res, config, userId }) => {
+  await setStaffPassword(config, userId, req.params.userId, req.body?.password)
+  res.json({ message: 'Staff password updated.' })
+}, { action: 'staff-password', max: 10 }))
 
 export default router

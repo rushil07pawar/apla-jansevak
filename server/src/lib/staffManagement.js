@@ -1,5 +1,4 @@
-import { randomBytes } from 'node:crypto'
-import { normalizeIndianMobile, staffAuthConfig, startPhoneRecovery } from './staffAuth.js'
+import { normalizeIndianMobile, staffAuthConfig } from './staffAuth.js'
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
@@ -181,13 +180,22 @@ async function manageStaff(config, actorId, action, staffUserId, data = {}) {
   })
 }
 
-async function createAuthUser(config, mobile) {
+function validateStaffPassword(password) {
+  if (typeof password !== 'string' || password.length < 12 || password.length > 128) {
+    const error = new Error('Set a staff password between 12 and 128 characters.')
+    error.status = 400
+    throw error
+  }
+  return password
+}
+
+async function createAuthUser(config, mobile, password) {
   return request(config, '/auth/v1/admin/users', {
     method: 'POST',
     body: JSON.stringify({
       phone: mobile,
       phone_confirm: true,
-      password: randomBytes(48).toString('base64url'),
+      password,
       app_metadata: { account_type: 'staff' },
     }),
   })
@@ -199,25 +207,13 @@ async function deleteAuthUser(config, userId) {
 
 export async function createStaffAccount(config, actorId, input) {
   const normalized = validateProfile(input)
-  const authUser = await createAuthUser(config, normalized.profile.mobile_e164)
+  const password = validateStaffPassword(input?.password)
+  const authUser = await createAuthUser(config, normalized.profile.mobile_e164, password)
   if (!authUser?.id) throw new Error('Supabase Auth did not return the new staff user ID.')
   try {
     const profile = await manageStaff(config, actorId, 'upsert', authUser.id, normalized)
-    if (!normalized.profile.active || !normalized.profile.approved) {
-      return {
-        profile,
-        recoverySent: false,
-        recoveryMessage: 'The account remains unavailable until its directory details are verified and approved.',
-      }
-    }
-    let recoverySent = false
-    try {
-      await startPhoneRecovery(config, normalized.profile.mobile_e164)
-      recoverySent = true
-    } catch (error) {
-      return { profile, recoverySent, recoveryMessage: error.message }
-    }
-    return { profile, recoverySent }
+    await recordStaffPasswordSet(config, actorId, authUser.id)
+    return { profile }
   } catch (error) {
     try { await deleteAuthUser(config, authUser.id) } catch (cleanupError) {
       error.cleanupError = cleanupError.message
@@ -253,20 +249,8 @@ export async function updateStaffAccount(config, actorId, staffUserId, input) {
   }
   try {
     const profile = await manageStaff(config, actorId, 'upsert', staffUserId, normalized)
-    if (!mobileChanged) return { profile, recoverySent: null }
-    if (!normalized.profile.active || !normalized.profile.approved) {
-      return {
-        profile,
-        recoverySent: false,
-        recoveryMessage: 'No setup code was sent because the profile is inactive or unapproved.',
-      }
-    }
-    try {
-      await startPhoneRecovery(config, normalized.profile.mobile_e164)
-      return { profile, recoverySent: true }
-    } catch (error) {
-      return { profile, recoverySent: false, recoveryMessage: error.message }
-    }
+    if (mobileChanged) await recordStaffPasswordSet(config, actorId, staffUserId)
+    return { profile }
   } catch (error) {
     if (mobileChanged) {
       try {
@@ -291,31 +275,39 @@ export async function setStaffActive(config, actorId, staffUserId, active) {
   return manageStaff(config, actorId, 'set_active', staffUserId, { profile: { active } })
 }
 
-export async function requestStaffCredentialReset(config, staffUserId) {
+export async function setStaffPassword(config, actorId, staffUserId, password) {
   if (!UUID_PATTERN.test(staffUserId)) {
     const error = new Error('Invalid staff user ID.')
     error.status = 400
     throw error
   }
-  const query = new URLSearchParams({
-    select: 'user_id,mobile_e164,active,approved',
-    user_id: `eq.${staffUserId}`,
-    limit: '1',
-  })
+  validateStaffPassword(password)
+  const query = new URLSearchParams({ select: 'user_id', user_id: `eq.${staffUserId}`, limit: '1' })
   const [staff] = await request(config, `/rest/v1/staff_profiles?${query}`)
-  if (!staff?.active || !staff?.approved) {
-    const error = new Error('Only active, approved staff accounts can receive a reset code.')
-    error.status = 400
+  if (!staff) {
+    const error = new Error('Staff profile not found.')
+    error.status = 404
     throw error
   }
-  await startPhoneRecovery(config, staff.mobile_e164)
+  await request(config, `/auth/v1/admin/users/${encodeURIComponent(staffUserId)}`, {
+    method: 'PUT',
+    body: JSON.stringify({ password }),
+  })
+  await recordStaffPasswordSet(config, actorId, staffUserId)
 }
 
-export async function recordPasswordResetRequest(config, actorId, staffUserId) {
-  await request(config, '/rest/v1/rpc/audit_staff_password_reset_request', {
-    method: 'POST',
-    body: JSON.stringify({ p_actor: actorId, p_staff_user_id: staffUserId }),
-  })
+async function recordStaffPasswordSet(config, actorId, staffUserId) {
+  try {
+    await request(config, '/rest/v1/rpc/set_staff_password_ready', {
+      method: 'POST',
+      body: JSON.stringify({ p_actor: actorId, p_staff_user_id: staffUserId }),
+    })
+  } catch (error) {
+    if (error.status === 404) {
+      error.message = 'Password was saved, but the password-audit migration is not applied. Apply 20261106_004_admin_managed_staff_passwords.sql and retry the password setup.'
+    }
+    throw error
+  }
 }
 
 async function authenticatedUser(config, token) {

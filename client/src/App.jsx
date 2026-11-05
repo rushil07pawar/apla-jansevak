@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { BrowserRouter, Link, Navigate, Route, Routes, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { ArrowRight, CheckCircle2, ImagePlus, LogIn, MapPin, RefreshCw, Search, ShieldCheck, UserPlus } from 'lucide-react'
-import { completeStaffPasswordRecovery, getCitizenIdentity, registerCitizen, signInCitizen, signInStaff, requestStaffPasswordRecovery } from './lib/auth'
+import { getCitizenIdentity, registerCitizen, signInCitizen, signInStaff } from './lib/auth'
 import { complaintCategories, getComplaint, submitComplaint } from './lib/complaints'
-import { createStaffAccount, getAdminAuditLogs, getAdminDepartments, getAdminStaff, getAdminWards, getStaffDashboard, resetStaffPassword, setStaffAccountActive, takeComplaintAction, updateStaffAccount } from './lib/staffManagement'
+import { createStaffAccount, getAdminAuditLogs, getAdminDepartments, getAdminStaff, getAdminWards, getStaffDashboard, setAdminStaffPassword, setStaffAccountActive, takeComplaintAction, updateStaffAccount } from './lib/staffManagement'
 import { isSupabaseConfigured, requireSupabase } from './lib/supabaseClient'
 import './App.css'
 
@@ -217,9 +217,6 @@ function Auth({ register = false }) {
 function StaffAuth() {
   const [mobile, setMobile] = useState('')
   const [password, setPassword] = useState('')
-  const [token, setToken] = useState('')
-  const [confirmPassword, setConfirmPassword] = useState('')
-  const [recoveryMode, setRecoveryMode] = useState(false)
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
   const navigate = useNavigate()
@@ -229,39 +226,14 @@ function StaffAuth() {
     setBusy(true)
     setMessage('')
     try {
-      if (recoveryMode) {
-        if (!/^\d{6}$/.test(token) || password.length < 12 || password !== confirmPassword) {
-          setMessage('Enter the six-digit code and matching passwords of at least 12 characters.')
-          return
-        }
-        setMessage(await completeStaffPasswordRecovery({ mobile, token, password }))
-        setPassword('')
-        setConfirmPassword('')
-        setToken('')
-        setRecoveryMode(false)
-        return
-      }
       const result = await signInStaff({ mobile, password })
       if (result.staff.force_password_change) {
-        setMessage('Your temporary password must be changed before accessing staff services. Use the recovery option or contact your administrator.')
+        setMessage('Your account needs an administrator to set a password before you can sign in.')
         return
       }
       navigate('/staff/dashboard', { replace: true })
     } catch (error) {
       setMessage(error.message || 'Unable to sign in with those credentials.')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  async function handleRecovery() {
-    setBusy(true)
-    setMessage('')
-    try {
-      setMessage(await requestStaffPasswordRecovery(mobile))
-      setRecoveryMode(true)
-    } catch (error) {
-      setMessage(error.message || 'Unable to request password recovery.')
     } finally {
       setBusy(false)
     }
@@ -273,24 +245,15 @@ function StaffAuth() {
         <div className="auth-intro">
           <p className="eyebrow">Separate staff access</p>
           <h1>Municipal Staff Login</h1>
-          <p>Use your registered mobile number and administrator-created password.</p>
+          <p>Sign in with your mobile number as username and the password set by your administrator. No verification code is required.</p>
         </div>
         <form className="form-card" onSubmit={handleSubmit} noValidate>
           <label className="field">
-            <span>Registered mobile number</span>
-            <input type="tel" inputMode="tel" autoComplete="username" placeholder="+919876543210" value={mobile} onChange={event => setMobile(event.target.value)} required readOnly={recoveryMode} />
+            <span>Mobile number (username)</span>
+            <input type="tel" inputMode="tel" autoComplete="username" placeholder="+919876543210" value={mobile} onChange={event => setMobile(event.target.value)} required />
           </label>
-          {recoveryMode ? <>
-            <label className="field"><span>SMS verification code</span><input inputMode="numeric" autoComplete="one-time-code" value={token} onChange={event => setToken(event.target.value.replace(/\D/g, '').slice(0, 6))} required /></label>
-            <label className="field"><span>New password (at least 12 characters)</span><input type="password" autoComplete="new-password" value={password} onChange={event => setPassword(event.target.value)} required /></label>
-            <label className="field"><span>Confirm new password</span><input type="password" autoComplete="new-password" value={confirmPassword} onChange={event => setConfirmPassword(event.target.value)} required /></label>
-            <button className="button button-primary form-submit" type="submit" disabled={busy || token.length !== 6 || password.length < 12 || password !== confirmPassword}>{busy ? 'Please wait…' : 'Set new password'} <ArrowRight size={18} /></button>
-            <button className="text-button recovery-button" type="button" disabled={busy} onClick={() => { setRecoveryMode(false); setMessage('') }}>Return to staff login</button>
-          </> : <>
-            <label className="field"><span>Password</span><input type="password" autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} required /></label>
-            <button className="button button-primary form-submit" type="submit" disabled={busy || !mobile || !password}>{busy ? 'Please wait…' : 'Staff Login'} <ArrowRight size={18} /></button>
-            <button className="text-button recovery-button" type="button" disabled={busy || !mobile} onClick={handleRecovery}>Forgot password?</button>
-          </>}
+          <label className="field"><span>Password</span><input type="password" autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} required /></label>
+          <button className="button button-primary form-submit" type="submit" disabled={busy || !mobile || !password}>{busy ? 'Please wait…' : 'Staff Login'} <ArrowRight size={18} /></button>
           {message && <p className="notice" role="status">{message}</p>}
         </form>
       </section>
@@ -759,6 +722,11 @@ function StaffManagement() {
   const [state, setState] = useState({ status: 'loading', departments: [], wards: [], staff: [], logs: [] })
   const [profile, setProfile] = useState(emptyStaffProfile)
   const [editingId, setEditingId] = useState('')
+  const [initialPassword, setInitialPassword] = useState('')
+  const [confirmInitialPassword, setConfirmInitialPassword] = useState('')
+  const [passwordTarget, setPasswordTarget] = useState(null)
+  const [adminPassword, setAdminPassword] = useState('')
+  const [confirmAdminPassword, setConfirmAdminPassword] = useState('')
   const [search, setSearch] = useState('')
   const [departmentFilter, setDepartmentFilter] = useState('')
   const [tab, setTab] = useState('directory')
@@ -839,14 +807,20 @@ function StaffManagement() {
 
   async function submitProfile(event) {
     event.preventDefault()
+    if (!editingId && (initialPassword.length < 12 || initialPassword.length > 128 || initialPassword !== confirmInitialPassword)) {
+      setMessage('Set matching staff passwords between 12 and 128 characters.')
+      return
+    }
     if (!window.confirm(`${editingId ? 'Save changes to' : 'Create'} this staff account and its ward/permission assignments?`)) return
     setBusy(true)
     setMessage('')
     try {
       const result = editingId
         ? await updateStaffAccount(editingId, profile)
-        : await createStaffAccount(profile)
+        : await createStaffAccount({ ...profile, password: initialPassword })
       setMessage(result.message || (profile.profile_verified ? 'Verified staff profile saved.' : 'Unverified staff profile saved pending administrator review.'))
+      setInitialPassword('')
+      setConfirmInitialPassword('')
       cancelEdit(true)
       await load()
     } catch (error) {
@@ -872,11 +846,26 @@ function StaffManagement() {
   }
 
   async function resetPassword(row) {
-    if (!window.confirm(`Send a password reset code to ${row.mobile_e164}?`)) return
+    setPasswordTarget({ userId: row.user_id, mobile: row.mobile_e164 })
+    setAdminPassword('')
+    setConfirmAdminPassword('')
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
+  async function submitAdminPassword(event) {
+    event.preventDefault()
+    if (!passwordTarget || adminPassword.length < 12 || adminPassword.length > 128 || adminPassword !== confirmAdminPassword) {
+      setMessage('Set matching staff passwords between 12 and 128 characters.')
+      return
+    }
+    if (!window.confirm(`Set a new password for ${passwordTarget.mobile}? Share it with the staff member through a secure channel.`)) return
     setBusy(true)
     try {
-      const result = await resetStaffPassword(row.user_id)
+      const result = await setAdminStaffPassword(passwordTarget.userId, adminPassword)
       setMessage(result.message)
+      setPasswordTarget(null)
+      setAdminPassword('')
+      setConfirmAdminPassword('')
       await load()
     } catch (error) {
       setMessage(error.message)
@@ -919,9 +908,17 @@ function StaffManagement() {
         <div className="management-tabs" aria-label="Staff management sections"><button type="button" aria-pressed={tab === 'directory'} onClick={() => setTab('directory')}>Department directory</button><button type="button" aria-pressed={tab === 'audit'} onClick={() => setTab('audit')}>Audit log</button></div>
         {message && <p className="notice" role="status">{message}</p>}
         {tab === 'directory' ? <>
+          {passwordTarget && <form className="form-card staff-editor" onSubmit={submitAdminPassword}>
+            <h2>Set staff password</h2>
+            <p className="field-hint">The password is saved by Supabase Auth and is never stored in the staff profile. No phone or email verification is sent.</p>
+            <label className="field"><span>Staff mobile username</span><input value={passwordTarget.mobile} readOnly /></label>
+            <label className="field"><span>New password (12–128 characters)</span><input type="password" autoComplete="new-password" value={adminPassword} onChange={event => setAdminPassword(event.target.value)} minLength="12" maxLength="128" required /></label>
+            <label className="field"><span>Confirm new password</span><input type="password" autoComplete="new-password" value={confirmAdminPassword} onChange={event => setConfirmAdminPassword(event.target.value)} minLength="12" maxLength="128" required /></label>
+            <div className="editor-actions"><button className="button button-primary" type="submit" disabled={busy || adminPassword.length < 12 || adminPassword !== confirmAdminPassword}>{busy ? 'Saving…' : 'Save password'}</button><button className="button button-secondary" type="button" onClick={() => setPasswordTarget(null)}>Cancel</button></div>
+          </form>}
           <form className="form-card staff-editor" onSubmit={submitProfile}>
             <h2>{editingId ? 'Edit staff profile' : 'Create staff account'}</h2>
-            <p className="field-hint">A new account is created in Supabase Auth using a random undisclosed temporary credential. The staff member receives a phone verification code to set their own password.</p>
+            <p className="field-hint">The mobile number is the username. An administrator sets the password; no phone or email verification is required. Passwords are stored only in Supabase Auth, never in the staff profile.</p>
             <div className="management-form-grid">
               <label className="field"><span>Staff ID</span><input value={profile.staff_id} onChange={event => setProfile({ ...profile, staff_id: event.target.value })} maxLength="80" /></label>
               <label className="field"><span>Department</span><select required value={profile.department_id} onChange={event => setProfile({ ...profile, department_id: event.target.value, reports_to_user_id: '' })}><option value="">Select department</option>{state.departments.map(department => <option key={department.id} value={department.id}>{department.name_mr} · {department.name}</option>)}</select></label>
@@ -930,6 +927,10 @@ function StaffManagement() {
               <label className="field"><span>Designation (Marathi)</span><input value={profile.designation_mr} onChange={event => setProfile({ ...profile, designation_mr: event.target.value })} /></label>
               <label className="field"><span>Designation (English)</span><input value={profile.designation_en} onChange={event => setProfile({ ...profile, designation_en: event.target.value })} /></label>
               <label className="field"><span>Staff login mobile (India)</span><input type="tel" placeholder="+919876543210" required disabled={Boolean(editingId)} value={profile.mobile_e164} onChange={event => setProfile({ ...profile, mobile_e164: event.target.value })} /></label>
+              {!editingId && <>
+                <label className="field"><span>Password (12–128 characters)</span><input type="password" autoComplete="new-password" minLength="12" maxLength="128" required value={initialPassword} onChange={event => setInitialPassword(event.target.value)} /></label>
+                <label className="field"><span>Confirm password</span><input type="password" autoComplete="new-password" minLength="12" maxLength="128" required value={confirmInitialPassword} onChange={event => setConfirmInitialPassword(event.target.value)} /></label>
+              </>}
               <label className="field"><span>Official contact number</span><input type="tel" placeholder="+919876543210" value={profile.official_contact_number} onChange={event => setProfile({ ...profile, official_contact_number: event.target.value })} /></label>
               <label className="field"><span>Account role</span><select value={profile.role} onChange={event => setProfile({ ...profile, role: event.target.value })}><option value="staff">Staff</option><option value="supervisor">Supervisor</option><option value="administrator">Administrator (not Main System Administrator)</option></select></label>
               <label className="field"><span>Reporting officer</span><select value={profile.reports_to_user_id} onChange={event => setProfile({ ...profile, reports_to_user_id: event.target.value })}><option value="">No reporting officer configured</option>{state.staff.filter(row => row.department_id === profile.department_id && row.user_id !== editingId && row.active && row.approved && !row.force_password_change).map(row => <option key={row.user_id} value={row.user_id}>{row.full_name_mr || row.full_name_en || row.staff_id}</option>)}</select></label>

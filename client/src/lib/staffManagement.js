@@ -70,8 +70,9 @@ export async function setStaffAccountActive(userId, active) {
   })
 }
 
-export async function resetStaffPassword(userId) {
-  return request(`/api/admin/staff/${encodeURIComponent(userId)}/password-reset`, {
-    method: 'POST',
+export async function setAdminStaffPassword(userId, password) {
+  return request(`/api/admin/staff/${encodeURIComponent(userId)}/password`, {
+    method: 'PUT',
+    body: JSON.stringify({ password }),
   })
 }
