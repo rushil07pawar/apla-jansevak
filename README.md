@@ -46,12 +46,14 @@ All application tables enable Row Level Security. Citizens can access only their
 ## Current scope
 
 - Responsive citizen homepage and civic-service overview
-- Citizen email/password registration and login, once configured
+- Citizen email/password registration and login, with email-confirmation-aware redirects
+- Protected geotagged complaint submission with a mandatory private photo and owner-only status view
 - Separate municipal staff login, restricted to provisioned staff accounts
-- Client-side validation for username, E.164 phone number, residential address, and password confirmation
+- Staff dashboard entry checks active approval and authorized ward assignments
+- Client-side validation for username, E.164 phone number, residential address, photo format/size, and browser location
 - `GET /api/health` API endpoint
 
-Complaint submission and tracking are future work. Passwords are only sent to Supabase Auth and are never stored by the application. Staff use their provisioned mobile number as the Auth login identifier; there is no public staff registration.
+Citizen complaint rows and photos use the existing Supabase schema and private `complaint-photos` bucket. The form uses the four category labels already present in the project; department routing and severity analysis remain pending and are not fabricated by the client. A photo-upload failure after row creation leaves an incomplete citizen-owned row that can be retried from the same form. Passwords are only sent to Supabase Auth and are never stored by the application. Staff use their provisioned mobile number as the Auth login identifier; there is no public staff registration.
 
 ## Database health checks
 
