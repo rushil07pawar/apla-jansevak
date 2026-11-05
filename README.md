@@ -53,6 +53,10 @@ All public tables enable Row Level Security. Citizens can access only their own 
 
 Complaint submission and tracking are future work. Passwords are only sent to Supabase Auth and are never stored by the application.
 
+## Database health checks
+
+Use the read-only [database health-check procedure](docs/database-health-check.md) to verify schema, RLS policies, storage policies, and connection usage. Perform authorisation tests only in a non-production Supabase project.
+
 ## Deployment checklist
 
 - Set the two `VITE_SUPABASE_*` values in protected frontend-host environment settings and rebuild.
