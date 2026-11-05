@@ -2,48 +2,98 @@ import { requireSupabase } from './supabaseClient'
 
 const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:5000'
 
+function withRequestContext(error, operation) {
+  if (error instanceof TypeError && /fetch/i.test(error.message)) {
+    const networkError = new Error(`Could not reach Supabase while ${operation}. Check your network and the deployment's Supabase URL, then retry.`)
+    networkError.code = 'NETWORK_ERROR'
+    return networkError
+  }
+  return error
+}
+
 export async function registerCitizen(values) {
   const { fullName, username, phone, address, email, password } = values
-  const { data, error } = await requireSupabase().auth.signUp({
-    email,
-    password,
-    options: {
-      data: {
-        full_name: fullName.trim(),
-        username: username.trim(),
-        phone: phone.trim(),
-        residential_address: address.trim(),
+  let result
+  try {
+    result = await requireSupabase().auth.signUp({
+      email,
+      password,
+      options: {
+        data: {
+          full_name: fullName.trim(),
+          username: username.trim(),
+          phone: phone.trim(),
+          residential_address: address.trim(),
+        },
       },
-    },
-  })
+    })
+  } catch (error) {
+    throw withRequestContext(error, 'creating your citizen account')
+  }
+  const { data, error } = result
   if (error) throw error
   return data
 }
 
-export async function getCitizenIdentity() {
+export async function getCitizenIdentity(authenticatedUser) {
   const client = requireSupabase()
-  const { data: { user }, error: userError } = await client.auth.getUser()
-  if (userError) throw userError
+  let user = authenticatedUser
+  if (authenticatedUser) {
+    let result
+    try {
+      result = await client.auth.getSession()
+    } catch (error) {
+      throw withRequestContext(error, 'verifying your sign-in session')
+    }
+    const { data: { session }, error: sessionError } = result
+    if (sessionError) throw sessionError
+    if (!session || session.user.id !== authenticatedUser.id) {
+      throw new Error('Your sign-in session could not be verified. Please sign in again.')
+    }
+    user = session.user
+  } else {
+    let result
+    try {
+      result = await client.auth.getUser()
+    } catch (error) {
+      throw withRequestContext(error, 'verifying your sign-in session')
+    }
+    const { data: { user: verifiedUser }, error: userError } = result
+    if (userError) throw withRequestContext(userError, 'verifying your sign-in session')
+    user = verifiedUser
+  }
   if (!user) throw new Error('You must sign in to continue.')
 
-  const { data: staff, error: staffError } = await client
-    .from('staff_profiles')
-    .select('user_id')
-    .eq('user_id', user.id)
-    .maybeSingle()
-  if (staffError) throw staffError
+  let staffResult
+  try {
+    staffResult = await client
+      .from('staff_profiles')
+      .select('user_id')
+      .eq('user_id', user.id)
+      .maybeSingle()
+  } catch (error) {
+    throw withRequestContext(error, 'checking your account type')
+  }
+  const { data: staff, error: staffError } = staffResult
+  if (staffError) throw withRequestContext(staffError, 'checking your account type')
   if (staff) {
     const error = new Error('This is a municipal staff account. Please use Municipal Staff Login.')
     error.code = 'STAFF_ACCOUNT'
     throw error
   }
 
-  const { data: profile, error: profileError } = await client
-    .from('profiles')
-    .select('id, full_name, username')
-    .eq('id', user.id)
-    .maybeSingle()
-  if (profileError) throw profileError
+  let profileResult
+  try {
+    profileResult = await client
+      .from('profiles')
+      .select('id, full_name, username')
+      .eq('id', user.id)
+      .maybeSingle()
+  } catch (error) {
+    throw withRequestContext(error, 'loading your citizen profile')
+  }
+  const { data: profile, error: profileError } = profileResult
+  if (profileError) throw withRequestContext(profileError, 'loading your citizen profile')
   if (!profile) {
     await client.auth.signOut({ scope: 'local' })
     throw new Error('Your account is signed in, but its citizen profile is missing. Please contact an administrator to restore your profile.')
@@ -54,9 +104,15 @@ export async function getCitizenIdentity() {
 
 export async function signInCitizen({ email, password }) {
   const client = requireSupabase()
-  const { data, error } = await client.auth.signInWithPassword({ email, password })
+  let result
+  try {
+    result = await client.auth.signInWithPassword({ email, password })
+  } catch (error) {
+    throw withRequestContext(error, 'signing in')
+  }
+  const { data, error } = result
   if (error) throw error
-  const identity = await getCitizenIdentity()
+  const identity = await getCitizenIdentity(data.user)
   return { ...data, ...identity }
 }
 

@@ -153,7 +153,7 @@ function Auth({ register = false }) {
           setMessage('Registration received. Confirm your email, then sign in to continue.')
           return
         }
-        await getCitizenIdentity()
+        await getCitizenIdentity(result.user)
       } else {
         await signInCitizen(values)
       }
@@ -300,6 +300,10 @@ function RequireCitizen({ children }) {
         if (active) setState({ status: 'authorized', identity })
       } catch (error) {
         if (active) {
+          if (error.code === 'NETWORK_ERROR') {
+            setState({ status: 'error', message: error.message })
+            return
+          }
           setState({
             status: 'unauthorized',
             staff: error.code === 'STAFF_ACCOUNT',
