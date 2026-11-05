@@ -10,8 +10,18 @@ export async function signInCitizen({ email, password }) {
   const client = requireSupabase()
   const { data, error } = await client.auth.signInWithPassword({ email, password })
   if (error) throw error
-  const { data: profile, error: profileError } = await client.from('profiles').select('id, full_name, username').single()
+  const userId = data.user?.id
+  if (!userId) throw new Error('Unable to identify the signed-in citizen account.')
+  const { data: profile, error: profileError } = await client
+    .from('profiles')
+    .select('id, full_name, username')
+    .eq('id', userId)
+    .maybeSingle()
   if (profileError) throw profileError
+  if (!profile) {
+    await client.auth.signOut({ scope: 'local' })
+    throw new Error('Your account is signed in, but its citizen profile is missing. Please contact an administrator to restore your profile.')
+  }
   return { ...data, profile }
 }
 export async function signInStaff({ mobile, password }) {
