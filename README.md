@@ -57,6 +57,8 @@ Complaint submission and tracking are future work. Passwords are only sent to Su
 
 Use the read-only [database health-check procedure](docs/database-health-check.md) to verify schema, RLS policies, storage policies, and connection usage. Perform authorisation tests only in a non-production Supabase project.
 
+Staff phone/password authentication is prepared in [staff-mobile-auth.md](docs/staff-mobile-auth.md). Its database migration is intentionally review-only and must be applied manually after the required Supabase Phone Auth and SMS/MFA configuration is complete.
+
 ## Deployment checklist
 
 - Set the two `VITE_SUPABASE_*` values in protected frontend-host environment settings and rebuild.
