@@ -305,7 +305,7 @@ function AdminSetup() {
         if (active) setSetupState({ status: result.available ? 'open' : result.reason || 'closed' })
       })
       .catch(error => {
-        if (active) setSetupState({ status: 'unavailable', message: error.message })
+        if (active) setSetupState({ status: error.code || 'unavailable', message: error.message })
       })
     return () => { active = false }
   }, [])
@@ -345,12 +345,12 @@ function AdminSetup() {
       })
       setSetupState({ status: 'success', message: result.message })
     } catch (error) {
-      let status = error.status === 409 ? 'closed' : 'open'
+      let status = error.status === 409 ? 'closed' : error.code || 'open'
       try {
         const latest = await getMainAdministratorSetupStatus()
         if (!latest.available) status = latest.reason || 'closed'
       } catch {
-        // Keep the original setup error visible if the status check also fails.
+        status = error.status === 409 ? 'closed' : error.code || 'unavailable'
       }
       setSetupState({
         status,
@@ -360,6 +360,11 @@ function AdminSetup() {
       setBusy(false)
     }
   }
+
+  const setupStatus = String(setupState.status)
+  const supabaseUnavailable = setupStatus.startsWith('SUPABASE_') ||
+    setupStatus === 'supabase_unavailable'
+  const apiUnavailable = ['API_UNREACHABLE', 'API_URL_MISSING', 'API_URL_INVALID'].includes(setupStatus)
 
   return (
     <Layout>
@@ -394,10 +399,18 @@ function AdminSetup() {
             </form>
           ) : (
             <>
-              <h2>{setupState.status === 'closed' ? 'Initial setup is closed' : 'Setup is unavailable'}</h2>
+              <h2>{setupState.status === 'closed'
+                ? 'Initial setup is closed'
+                : supabaseUnavailable
+                  ? 'Supabase connection unavailable'
+                  : setupState.status === 'BACKEND_CONFIGURATION_MISSING'
+                    ? 'Backend Supabase configuration unavailable'
+                    : apiUnavailable
+                    ? 'Application API unavailable'
+                    : 'Setup is unavailable'}</h2>
               <p className="notice notice-error" role="alert">{setupState.status === 'closed'
                 ? setupState.message || 'A Main System Administrator already exists. This page cannot create or promote another account.'
-                : setupState.message || 'The server has not enabled one-time setup or could not verify its status.'}</p>
+                : setupState.message || 'The backend could not verify initial setup. Check its configuration and logs.'}</p>
               <Link className="button button-secondary" to="/staff-login">Go to Municipal Staff Login</Link>
             </>
           )}

@@ -70,6 +70,8 @@ The additive [staff management migrations](database/migrations/20261106_003_staf
 The frontend package is in `client/`; the repository root has no `package.json`. Set the Vercel project's **Root Directory** to `client`. The tracked `client/vercel.json` installs from `client/package-lock.json` including dev dependencies, runs `npm run build`, and serves `dist`. Do not override these commands with `vite build` or an install command that omits dev dependencies: Vite is a frontend dev dependency.
 
 - Set the two `VITE_SUPABASE_*` values and `VITE_API_URL` in protected frontend-host environment settings and rebuild.
-- Set `CLIENT_ORIGIN` on the server to the deployed frontend origin.
-- Deploy the Express `server/` as a separate backend service with `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, and `SUPABASE_SECRET_KEY` configured only as server secrets. Vercel's `client/` root does not deploy this API.
+- Set `FRONTEND_URL` on the server to `https://apla-jansevak.vercel.app` for CORS. `CLIENT_ORIGIN` remains a supported legacy alias.
+- Deploy the Express `server/` as a separate backend service with `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SECRET_KEY`, `FRONTEND_URL`, `ADMIN_SETUP_KEY`, and `NODE_ENV=production` configured in Render's private environment settings. Render supplies `PORT`; do not set server secret values in Vercel. Vercel's `client/` root does not deploy this API.
+- Set Vercel's build-time `VITE_API_URL` to the Render service's HTTPS origin only (for example, `https://<service>.onrender.com`, without `/api`). A production build intentionally does not fall back to `localhost:5000`.
+- Verify Render separately at `/api/health` (Express process) and `/api/health/supabase` (backend-to-Supabase REST connection). `GET /api/staff-auth/admin-setup/status` reports whether initial setup is open or closed.
 - Before launch, test registration/email confirmation, profile isolation, complaint RLS, staff department access, and private-photo access against a non-production Supabase project.

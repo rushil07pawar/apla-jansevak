@@ -1,13 +1,12 @@
 import { requireSupabase } from './supabaseClient'
-
-const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:5000'
+import { requireApiUrl } from './apiConfig'
 
 async function request(path, options = {}) {
   const { data: { session }, error: sessionError } = await requireSupabase().auth.getSession()
   if (sessionError) throw sessionError
   if (!session?.access_token) throw new Error('Sign in with an authorized municipal staff account.')
 
-  const response = await fetch(`${apiUrl}${path}`, {
+  const response = await fetch(`${requireApiUrl()}${path}`, {
     ...options,
     headers: {
       authorization: `Bearer ${session.access_token}`,

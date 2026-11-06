@@ -1,6 +1,5 @@
 import { requireSupabase } from './supabaseClient'
-
-const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:5000'
+import { requireApiUrl } from './apiConfig'
 
 function withRequestContext(error, operation) {
   if (error instanceof TypeError && /fetch/i.test(error.message)) {
@@ -119,7 +118,7 @@ export async function signInCitizen({ email, password }) {
 export async function signInStaff({ mobile, password }) {
   let response
   try {
-    response = await fetch(`${apiUrl}/api/staff-auth/login`, {
+    response = await fetch(`${requireApiUrl()}/api/staff-auth/login`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ mobile, password }),
@@ -142,13 +141,21 @@ export async function signInStaff({ mobile, password }) {
 export async function getMainAdministratorSetupStatus() {
   let response
   try {
-    response = await fetch(`${apiUrl}/api/staff-auth/admin-setup/status`)
+    response = await fetch(`${requireApiUrl()}/api/staff-auth/admin-setup/status`)
   } catch (error) {
-    throw withRequestContext(error, 'checking initial administrator setup')
+    if (error.code === 'API_URL_MISSING') throw error
+    if (error instanceof TypeError) {
+      const apiError = new Error('Could not reach the application API. Check VITE_API_URL, the Render service, and its CORS frontend URL.')
+      apiError.code = 'API_UNREACHABLE'
+      throw apiError
+    }
+    throw error
   }
   const data = await response.json().catch(() => ({}))
   if (!response.ok) {
-    throw new Error(data.message || 'Unable to check initial administrator setup.')
+    const error = new Error(data.message || 'Unable to check initial administrator setup.')
+    error.code = data.reason || 'API_REQUEST_FAILED'
+    throw error
   }
   return data
 }
@@ -156,13 +163,19 @@ export async function getMainAdministratorSetupStatus() {
 export async function setupMainAdministrator(values) {
   let response
   try {
-    response = await fetch(`${apiUrl}/api/staff-auth/admin-setup`, {
+    response = await fetch(`${requireApiUrl()}/api/staff-auth/admin-setup`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(values),
     })
   } catch (error) {
-    throw withRequestContext(error, 'creating the Main System Administrator')
+    if (error.code === 'API_URL_MISSING') throw error
+    if (error instanceof TypeError) {
+      const apiError = new Error('Could not reach the application API. Check VITE_API_URL, the Render service, and its CORS frontend URL.')
+      apiError.code = 'API_UNREACHABLE'
+      throw apiError
+    }
+    throw error
   }
   const data = await response.json().catch(() => ({}))
   if (!response.ok) {

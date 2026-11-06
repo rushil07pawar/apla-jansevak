@@ -19,11 +19,48 @@ export function fixedWindowRateLimit({ windowMs, max, key }) {
   }
 }
 
+function validSupabaseUrl(value) {
+  if (typeof value !== 'string' || !value.trim() || /your-project-ref|example\.com/i.test(value)) {
+    return false
+  }
+  try {
+    const url = new URL(value)
+    return ['https:', 'http:'].includes(url.protocol) &&
+      (url.protocol === 'https:' || ['localhost', '127.0.0.1'].includes(url.hostname)) &&
+      !url.username && !url.password
+  } catch {
+    return false
+  }
+}
+
+export function staffAuthEnvironmentStatus() {
+  const secretKeyVariable = process.env.SUPABASE_SECRET_KEY
+    ? 'SUPABASE_SECRET_KEY'
+    : process.env.SUPABASE_SERVICE_ROLE_KEY
+      ? 'SUPABASE_SERVICE_ROLE_KEY'
+      : null
+  return {
+    supabaseUrlPresent: Boolean(process.env.SUPABASE_URL),
+    supabaseUrlValid: validSupabaseUrl(process.env.SUPABASE_URL),
+    publishableKeyPresent: Boolean(process.env.SUPABASE_PUBLISHABLE_KEY),
+    secretKeyPresent: Boolean(secretKeyVariable),
+    secretKeyVariable,
+    setupKeyPresent: Boolean(process.env.ADMIN_SETUP_KEY || process.env.MAIN_ADMIN_SETUP_KEY),
+    frontendUrlPresent: Boolean(process.env.FRONTEND_URL || process.env.CLIENT_ORIGIN),
+  }
+}
+
+export function adminSetupKey() {
+  return process.env.ADMIN_SETUP_KEY || process.env.MAIN_ADMIN_SETUP_KEY || ''
+}
+
 export function staffAuthConfig() {
   const url = process.env.SUPABASE_URL
   const publishableKey = process.env.SUPABASE_PUBLISHABLE_KEY
   const secretKey = process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY
-  return url && publishableKey && secretKey ? { url: url.replace(/\/$/, ''), publishableKey, secretKey } : null
+  return validSupabaseUrl(url) && publishableKey && secretKey
+    ? { url: url.replace(/\/$/, ''), publishableKey, secretKey }
+    : null
 }
 
 async function supabaseRequest(config, path, options = {}) {

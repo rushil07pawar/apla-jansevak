@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { timingSafeEqual } from 'node:crypto'
-import { authorizeStaffLogin, fixedWindowRateLimit, normalizeIndianMobile, passwordSession, staffAuthConfig } from '../lib/staffAuth.js'
+import { adminSetupKey, authorizeStaffLogin, fixedWindowRateLimit, normalizeIndianMobile, passwordSession, staffAuthConfig, staffAuthEnvironmentStatus } from '../lib/staffAuth.js'
 
 const router = Router()
 const genericFailure = { message: 'Unable to sign in with those credentials.' }
@@ -23,24 +23,44 @@ async function mainAdministratorExists(config) {
     is_main_system_admin: 'eq.true',
     limit: '1',
   })
-  const response = await fetch(`${config.url}/rest/v1/staff_profiles?${query}`, {
-    headers: {
-      apikey: config.secretKey,
-      authorization: `Bearer ${config.secretKey}`,
-    },
-  })
-  if (!response.ok) throw new Error('Unable to verify administrator setup state.')
+  let response
+  try {
+    response = await fetch(`${config.url}/rest/v1/staff_profiles?${query}`, {
+      headers: {
+        apikey: config.secretKey,
+        authorization: `Bearer ${config.secretKey}`,
+      },
+      signal: AbortSignal.timeout(5000),
+    })
+  } catch {
+    const error = new Error('Supabase could not be reached.')
+    error.code = 'SUPABASE_UNAVAILABLE'
+    throw error
+  }
+  if (!response.ok) {
+    const error = new Error('Supabase setup-status query failed.')
+    error.code = response.status === 401 || response.status === 403
+      ? 'SUPABASE_AUTH_FAILED'
+      : 'SUPABASE_QUERY_FAILED'
+    error.status = response.status
+    throw error
+  }
   const profiles = await response.json()
+  if (!Array.isArray(profiles)) {
+    const error = new Error('Supabase returned an invalid setup-status response.')
+    error.code = 'SUPABASE_QUERY_FAILED'
+    throw error
+  }
   return Array.isArray(profiles) && profiles.length > 0
 }
 
 function setupKeyIsConfigured() {
-  const key = process.env.MAIN_ADMIN_SETUP_KEY
+  const key = adminSetupKey()
   return typeof key === 'string' && Buffer.byteLength(key, 'utf8') >= 32
 }
 
 function setupKeyMatches(candidate) {
-  const expected = process.env.MAIN_ADMIN_SETUP_KEY
+  const expected = adminSetupKey()
   if (!setupKeyIsConfigured() || typeof candidate !== 'string') return false
   const expectedBytes = Buffer.from(expected, 'utf8')
   const candidateBytes = Buffer.from(candidate, 'utf8')
@@ -60,17 +80,55 @@ async function removeNewAuthUser(config, userId) {
 }
 
 router.get('/admin-setup/status', async (_req, res) => {
+  const envStatus = staffAuthEnvironmentStatus()
   const config = staffAuthConfig()
-  if (!config || !setupKeyIsConfigured()) {
-    return res.status(200).json({ available: false, reason: 'unavailable' })
+  if (!config) {
+    console.error('Admin setup status configuration check failed:', {
+      stage: 'configuration',
+      supabaseUrlPresent: envStatus.supabaseUrlPresent,
+      supabaseUrlValid: envStatus.supabaseUrlValid,
+      publishableKeyPresent: envStatus.publishableKeyPresent,
+      secretKeyPresent: envStatus.secretKeyPresent,
+    })
+    return res.status(503).json({
+      available: false,
+      reason: 'BACKEND_CONFIGURATION_MISSING',
+      message: 'Backend Supabase configuration is incomplete or invalid.',
+    })
   }
   try {
     if (await mainAdministratorExists(config)) {
+      console.info('Admin setup status query completed:', { result: 'closed' })
       return res.status(200).json({ available: false, reason: 'closed' })
     }
+    if (!setupKeyIsConfigured()) {
+      console.info('Admin setup status query completed:', {
+        result: 'disabled',
+        reason: 'setup_key_missing',
+      })
+      return res.status(503).json({
+        available: false,
+        reason: 'ADMIN_SETUP_KEY_MISSING',
+        message: 'Initial administrator setup is disabled by the backend.',
+      })
+    }
+    console.info('Admin setup status query completed:', { result: 'open' })
     return res.status(200).json({ available: true })
-  } catch {
-    return res.status(503).json({ available: false, reason: 'unavailable' })
+  } catch (error) {
+    console.error('Admin setup status query failed:', {
+      result: 'error',
+      reason: error.code || 'SUPABASE_QUERY_FAILED',
+      status: error.status || null,
+    })
+    return res.status(503).json({
+      available: false,
+      reason: error.code || 'SUPABASE_QUERY_FAILED',
+      message: error.code === 'SUPABASE_UNAVAILABLE'
+        ? 'Backend cannot reach Supabase. Check backend-to-Supabase network access.'
+        : error.code === 'SUPABASE_AUTH_FAILED'
+          ? 'Backend Supabase credentials were rejected. Check the server-only API key.'
+          : 'Backend could not verify administrator setup in Supabase. Check migrations and backend logs.',
+    })
   }
 })
 
