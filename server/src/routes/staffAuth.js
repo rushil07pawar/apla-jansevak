@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import { timingSafeEqual } from 'node:crypto'
 import { adminSetupKey, authorizeStaffLogin, fixedWindowRateLimit, normalizeIndianMobile, passwordSession, staffAuthConfig, staffAuthEnvironmentStatus } from '../lib/staffAuth.js'
+import { requestAuthAdminUser, safeAuthResponseDetails } from '../lib/adminAuthRequest.js'
 
 const router = Router()
 const genericFailure = { message: 'Unable to sign in with those credentials.' }
@@ -86,8 +87,8 @@ async function findStaffProfile(config, userId) {
   return Array.isArray(profiles) ? profiles[0] || null : null
 }
 
-async function setupFailureCode(response, { authService = false } = {}) {
-  const payload = await response.json().catch(() => ({}))
+async function setupFailureCode(response, { authService = false, payload = null } = {}) {
+  payload ||= await response.json().catch(() => ({}))
   const code = typeof payload.code === 'string' ? payload.code : ''
   const message = [payload.message, payload.msg, payload.error, payload.error_description]
     .filter(value => typeof value === 'string')
@@ -226,6 +227,8 @@ router.post('/admin-setup', adminSetupLimit, async (req, res) => {
   let stage = 'checking_setup'
   let failureCode = null
   let failureStatus = null
+  let authRequestDiagnostic = null
+  let authResponseDetails = null
   try {
     if (await mainAdministratorExists(config)) {
       return res.status(409).json({ message: 'Initial administrator setup is closed.' })
@@ -234,32 +237,59 @@ router.post('/admin-setup', adminSetupLimit, async (req, res) => {
     stage = 'creating_auth_user'
     let createResponse
     try {
-      createResponse = await fetch(`${config.url}/auth/v1/admin/users`, {
-        method: 'POST',
-        headers: {
-          apikey: config.secretKey,
-          authorization: `Bearer ${config.secretKey}`,
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          email,
-          email_confirm: true,
-          phone: mobile,
-          phone_confirm: true,
-          password,
-          app_metadata: { account_type: 'staff' },
-          user_metadata: { full_name: fullName, username },
-        }),
-        signal: AbortSignal.timeout(10000),
+      const request = await requestAuthAdminUser(config, {
+        email,
+        email_confirm: true,
+        phone: mobile,
+        phone_confirm: true,
+        password,
+        app_metadata: { account_type: 'staff' },
+        user_metadata: { full_name: fullName, username },
       })
-    } catch {
-      failureCode = 'AUTH_SERVICE_UNAVAILABLE'
+      createResponse = request.response
+      failureStatus = createResponse.status
+      authRequestDiagnostic = {
+        requestInitiated: true,
+        httpResponseReceived: true,
+        status: createResponse.status,
+        host: request.host,
+        path: request.path,
+      }
+    } catch (requestError) {
+      authRequestDiagnostic = requestError?.diagnostic || null
+      failureCode = requestError?.code === 'AUTH_REQUEST_CONSTRUCTION_FAILED'
+        ? 'AUTH_REQUEST_CONSTRUCTION_FAILED'
+        : authRequestDiagnostic?.requestInitiated &&
+            !['dns', 'tls'].includes(authRequestDiagnostic.failureType)
+          ? 'AUTH_CREATION_UNCONFIRMED'
+          : 'AUTH_SERVICE_UNAVAILABLE'
       throw new Error('Supabase Auth is unreachable.')
     }
     if (!createResponse.ok) {
-      failureStatus = createResponse.status
-      failureCode = await setupFailureCode(createResponse, { authService: true })
+      const authErrorPayload = await createResponse.json().catch(() => ({}))
+      authResponseDetails = safeAuthResponseDetails(authErrorPayload, [
+        config.secretKey,
+        password,
+        email,
+        mobile,
+        fullName,
+        username,
+        input.setupKey,
+      ])
+      failureCode = await setupFailureCode(createResponse, { authService: true, payload: authErrorPayload })
+      if (createResponse.status >= 500) failureCode = 'AUTH_CREATION_UNCONFIRMED'
       if (failureCode === 'AUTH_ACCOUNT_ALREADY_EXISTS') {
+        console.warn('Supabase Auth administrator creation rejected:', {
+          stage,
+          reason: failureCode,
+          status: createResponse.status,
+          requestInitiated: true,
+          httpResponseReceived: true,
+          host: authRequestDiagnostic.host,
+          path: authRequestDiagnostic.path,
+          supabaseErrorCode: authResponseDetails.code,
+          supabaseErrorMessage: authResponseDetails.message,
+        })
         return res.status(409).json({ code: failureCode, message: setupFailureMessage(failureCode) })
       }
       throw new Error('Supabase Auth rejected user creation.')
@@ -326,12 +356,39 @@ router.post('/admin-setup', adminSetupLimit, async (req, res) => {
         : 'SUPABASE_SERVICE_ERROR'
     }
 
+    const authCreationState = authUserId
+      ? 'created'
+      : failureCode === 'AUTH_ACCOUNT_ALREADY_EXISTS'
+        ? 'existing_account'
+        : failureCode === 'AUTH_CREATION_UNCONFIRMED'
+          ? 'unconfirmed'
+          : 'not_created'
     console.error('Initial administrator setup failed:', {
       stage,
       reason: failureCode,
-      status: failureStatus,
-      authUserCreated: Boolean(authUserId),
-      accountPreserved: Boolean(authUserId),
+      status: stage === 'creating_auth_user'
+        ? authRequestDiagnostic?.status ?? failureStatus
+        : failureStatus,
+      authUserCreated: authCreationState === 'created'
+        ? true
+        : authCreationState === 'not_created'
+          ? false
+          : null,
+      accountPreserved: authUserId ? true : authCreationState === 'not_created' ? false : null,
+      authCreationState,
+      ...(stage === 'creating_auth_user' ? {
+        exceptionName: authRequestDiagnostic?.exceptionName || null,
+        exceptionMessage: authRequestDiagnostic?.exceptionMessage || null,
+        causeName: authRequestDiagnostic?.causeName || null,
+        causeCode: authRequestDiagnostic?.causeCode || null,
+        requestInitiated: authRequestDiagnostic?.requestInitiated ?? false,
+        httpResponseReceived: authRequestDiagnostic?.httpResponseReceived ?? false,
+        failureType: authRequestDiagnostic?.failureType || (failureStatus ? 'http' : 'response_processing'),
+        host: authRequestDiagnostic?.host || null,
+        path: authRequestDiagnostic?.path || '/auth/v1/admin/users',
+        supabaseErrorCode: authResponseDetails?.code || null,
+        supabaseErrorMessage: authResponseDetails?.message || null,
+      } : {}),
     })
     if (authUserId) {
       return res.status(failureCode === 'DATABASE_PROFILE_CONFLICT' ? 409 : 503).json({
