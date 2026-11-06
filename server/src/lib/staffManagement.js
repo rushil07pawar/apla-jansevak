@@ -46,18 +46,18 @@ export async function authorizeMainAdministrator(req) {
   }
   const user = await userResponse.json()
   const query = new URLSearchParams({
-    select: 'user_id,role,active,approved,force_password_change,is_main_system_admin',
+    select: 'user_id,staff_id,full_name_mr,full_name_en,designation_id,designation_mr,designation_en,department_id,role,active,approved,force_password_change,is_main_system_admin,mobile_e164,official_contact_number,profile_verified,updated_at',
     user_id: `eq.${user.id}`,
     limit: '1',
   })
   const [staff] = await request(config, `/rest/v1/staff_profiles?${query}`)
-  if (!staff?.is_main_system_admin || staff.role !== 'administrator' ||
+  if (staff?.is_main_system_admin !== true || staff.role !== 'administrator' ||
       !staff.active || !staff.approved || staff.force_password_change) {
     const error = new Error('Main System Administrator authorization is required.')
     error.status = 403
     throw error
   }
-  return { config, userId: user.id }
+  return { config, userId: user.id, staff }
 }
 
 export async function listDepartments(config) {

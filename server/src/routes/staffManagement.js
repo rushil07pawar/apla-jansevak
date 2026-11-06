@@ -2,6 +2,7 @@ import { Router } from 'express'
 import {
   authorizeMainAdministrator,
   createStaffAccount,
+  getStaffDashboard,
   listDepartments,
   listStaffDesignations,
   listStaffDirectory,
@@ -32,11 +33,11 @@ function consumeRateLimit(key, max) {
 function handleAdmin(handler, limit) {
   return async (req, res) => {
     try {
-      const { config, userId } = await authorizeMainAdministrator(req)
+      const { config, userId, staff } = await authorizeMainAdministrator(req)
       if (limit && !consumeRateLimit(`${limit.action}:${userId}:${req.params.userId || ''}`, limit.max)) {
         return res.status(429).json({ message: 'Too many staff-management attempts. Please try again later.' })
       }
-      const result = await handler({ req, res, config, userId })
+      const result = await handler({ req, res, config, userId, staff })
       if (result !== undefined && !res.headersSent) res.json(result)
     } catch (error) {
       if (res.headersSent) return
@@ -60,6 +61,9 @@ router.get('/wards', handleAdmin(async ({ config }) => listWards(config)))
 router.get('/designations', handleAdmin(async ({ config }) => listStaffDesignations(config)))
 router.get('/staff', handleAdmin(async ({ config }) => listStaffDirectory(config)))
 router.get('/system-settings', handleAdmin(async ({ config }) => listSystemSettings(config)))
+router.get('/dashboard', handleAdmin(async ({ config, userId, staff }) =>
+  getStaffDashboard(config, userId, staff),
+))
 
 router.post('/departments', handleAdmin(async ({ req, res, config, userId }) => {
   const department = await manageDepartment(config, userId, 'create', req.body)

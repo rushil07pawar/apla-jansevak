@@ -26,6 +26,10 @@ export async function getStaffDashboard() {
   return request('/api/staff/dashboard')
 }
 
+export async function getAdminDashboard() {
+  return request('/api/admin/dashboard')
+}
+
 export async function takeComplaintAction(complaintId, action) {
   return request(`/api/staff/complaints/${encodeURIComponent(complaintId)}/actions`, {
     method: 'POST',

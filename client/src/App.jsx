@@ -3,7 +3,7 @@ import { BrowserRouter, Link, Navigate, Route, Routes, useLocation, useNavigate,
 import { ArrowRight, CheckCircle2, Eye, EyeOff, ImagePlus, LogIn, MapPin, RefreshCw, Search, ShieldCheck, UserPlus } from 'lucide-react'
 import { getCitizenIdentity, registerCitizen, signInCitizen, signInStaff } from './lib/auth'
 import { complaintCategories, getComplaint, submitComplaint } from './lib/complaints'
-import { createAdminDepartment, createStaffAccount, createStaffDesignation, deleteAdminSystemSetting, getAdminAuditLogs, getAdminDepartments, getAdminDesignations, getAdminStaff, getAdminSystemSettings, getAdminWards, getStaffDashboard, saveAdminSystemSetting, setAdminStaffPassword, setStaffAccountActive, setStaffDesignationActive, takeComplaintAction, updateAdminDepartment, updateStaffAccount, updateStaffDesignation } from './lib/staffManagement'
+import { createAdminDepartment, createStaffAccount, createStaffDesignation, deleteAdminSystemSetting, getAdminAuditLogs, getAdminDashboard, getAdminDepartments, getAdminDesignations, getAdminStaff, getAdminSystemSettings, getAdminWards, getStaffDashboard, saveAdminSystemSetting, setAdminStaffPassword, setStaffAccountActive, setStaffDesignationActive, takeComplaintAction, updateAdminDepartment, updateStaffAccount, updateStaffDesignation } from './lib/staffManagement'
 import { isSupabaseConfigured, requireSupabase } from './lib/supabaseClient'
 import './App.css'
 
@@ -232,8 +232,13 @@ function StaffAuth() {
     setBusy(true)
     setMessage('')
     try {
-      await signInStaff({ mobile, password })
-      navigate('/staff/dashboard', { replace: true })
+      const { staff } = await signInStaff({ mobile, password })
+      navigate(
+        staff.is_main_system_admin === true && staff.role === 'administrator'
+          ? '/admin-dashboard'
+          : '/staff/dashboard',
+        { replace: true },
+      )
     } catch (error) {
       setMessage(error.message || 'Unable to sign in with those credentials.')
     } finally {
@@ -247,7 +252,7 @@ function StaffAuth() {
         <div className="auth-intro">
           <p className="eyebrow">Separate staff access</p>
           <h1>Municipal Staff Login</h1>
-          <p>Use your registered 10-digit mobile number and password. Staff accounts are created by the Main System Administrator.</p>
+          <p>Staff and the Main System Administrator use their registered 10-digit mobile number and password here. Administrator access is verified securely after sign-in.</p>
         </div>
         <form className="form-card" onSubmit={handleSubmit} noValidate>
           <label className="field">
@@ -575,26 +580,39 @@ function TrackComplaint() {
   )
 }
 
-function StaffDashboard() {
+function StaffDashboard({ administratorOnly = false }) {
   const [state, setState] = useState({ status: 'loading' })
   const [onlyAssigned, setOnlyAssigned] = useState(false)
   const navigate = useNavigate()
 
   useEffect(() => {
     let active = true
-    getStaffDashboard()
-      .then(data => { if (active) setState({ status: 'authorized', ...data }) })
+    const loadDashboard = administratorOnly
+      ? getAdminDashboard
+      : getStaffDashboard
+    loadDashboard()
+      .then(data => {
+        if (!active) return
+        if (administratorOnly && (
+          data.staff.is_main_system_admin !== true ||
+          data.staff.role !== 'administrator'
+        )) {
+          setState({ status: 'error', message: 'Main System Administrator access is required.' })
+          return
+        }
+        setState({ status: 'authorized', ...data })
+      })
       .catch(error => {
         if (active) setState({ status: 'error', message: error.message || 'Unable to verify staff authorization.' })
       })
     return () => { active = false }
-  }, [])
+  }, [administratorOnly])
 
   async function runAction(complaintId, action) {
     setState(current => ({ ...current, busyId: complaintId, actionMessage: '' }))
     try {
       await takeComplaintAction(complaintId, action)
-      const data = await getStaffDashboard()
+      const data = administratorOnly ? await getAdminDashboard() : await getStaffDashboard()
       setState({ status: 'authorized', ...data, actionMessage: 'Complaint activity recorded.' })
     } catch (error) {
       setState(current => ({ ...current, busyId: null, actionMessage: error.message }))
@@ -624,6 +642,16 @@ function StaffDashboard() {
     )
     : []
 
+  if (administratorOnly && state.status === 'authorized' &&
+      (state.staff.is_main_system_admin !== true || state.staff.role !== 'administrator')) {
+    return <Layout><LoadingPage text="Verifying administrator authorization…" /></Layout>
+  }
+
+  if (!administratorOnly && state.status === 'authorized' &&
+      state.staff.is_main_system_admin === true && state.staff.role === 'administrator') {
+    return <Navigate to="/admin-dashboard" replace />
+  }
+
   if (state.status === 'loading') return <Layout><LoadingPage text="Verifying staff authorization…" /></Layout>
   if (state.status !== 'authorized') {
     return (
@@ -641,14 +669,16 @@ function StaffDashboard() {
   return (
     <Layout>
       <section className="details-card staff-dashboard">
-        <p className="eyebrow">Authorized staff dashboard</p>
-        <h1>Complaint Work Queue</h1>
-        <p>Complaint records are limited by your active department, ward, and database-authorized permissions.</p>
+        <p className="eyebrow">{administratorOnly ? 'Global administrator access' : 'Authorized staff dashboard'}</p>
+        <h1>{administratorOnly ? 'Main System Administrator Dashboard' : 'Complaint Work Queue'}</h1>
+        <p>{administratorOnly
+          ? 'Global access to departments, wards, complaints, and staff administration is verified by the server and database.'
+          : 'Complaint records are limited by your active department, ward, and database-authorized permissions.'}</p>
         <dl className="details-list">
           <div><dt>Staff member</dt><dd>{state.staff.full_name_mr || state.staff.full_name_en || state.staff.staff_id || 'Municipal staff'}</dd></div>
           <div><dt>Role</dt><dd>{state.staff.is_main_system_admin ? 'Main System Administrator' : STAFF_ROLE_LABELS[state.staff.role] || state.staff.role}</dd></div>
           <div><dt>Designation</dt><dd>{state.staff.designation_mr || state.staff.designation_en || 'Not recorded'}</dd></div>
-          <div><dt>Department</dt><dd>{state.departments.find(department => department.id === state.staff.department_id)?.name || 'Cross-department administrator'}</dd></div>
+          <div><dt>Department</dt><dd>{state.staff.is_main_system_admin ? 'Not applicable (global administrator)' : state.departments.find(department => department.id === state.staff.department_id)?.name || 'Not assigned'}</dd></div>
           <div><dt>Authorized wards</dt><dd>{state.staff.is_main_system_admin ? 'All wards' : state.staff.authorized_wards?.length ? state.staff.authorized_wards.map(ward => `Ward ${String(ward.ward_number).padStart(2, '0')}`).join(', ') : 'None assigned'}</dd></div>
           <div><dt>Reporting officer</dt><dd>{state.staff.reportsTo?.full_name_mr || state.staff.reportsTo?.full_name_en || state.staff.reportsTo?.staff_id || 'Not configured'}</dd></div>
         </dl>
@@ -659,7 +689,7 @@ function StaffDashboard() {
           const count = state.complaints.filter(complaint => complaint.department_id === department.id).length
           return <p key={department.id}><strong>{department.name_mr}</strong> · {department.name}: {count}</p>
         })}{state.complaints.some(complaint => !complaint.department_id) && <p><strong>Unrouted (manual review required)</strong>: {state.complaints.filter(complaint => !complaint.department_id).length}</p>}<p className="field-hint">Overdue tracking is unavailable until an approved due-date/SLA rule exists.</p></div>}
-        {state.staff.is_main_system_admin && <button className="button button-secondary" type="button" onClick={() => navigate('/staff/management')}>Open staff and department management</button>}
+        {state.staff.is_main_system_admin && <button className="button button-secondary" type="button" onClick={() => navigate('/staff/management')}>Open staff, department, settings, and audit management</button>}
         {state.actionMessage && <p className="notice" role="status">{state.actionMessage}</p>}
         <div className="queue-filters"><button type="button" className={onlyAssigned ? 'button button-primary' : 'button button-secondary'} aria-pressed={onlyAssigned} onClick={() => setOnlyAssigned(value => !value)}>{onlyAssigned ? 'Showing my assigned complaints' : 'Show only complaints assigned to me'}</button></div>
         <div className="work-queue">
@@ -1201,6 +1231,7 @@ function AppRoutes() {
       <Route path="/login" element={<Auth />} />
       <Route path="/staff-login" element={<StaffAuth />} />
       <Route path="/staff/dashboard" element={<StaffDashboard />} />
+      <Route path="/admin-dashboard" element={<StaffDashboard administratorOnly />} />
       <Route path="/staff/management" element={<StaffManagement />} />
       <Route path="/complaints/new" element={<RequireCitizen><ComplaintForm /></RequireCitizen>} />
       <Route path="/complaints/:id" element={<RequireCitizen><ComplaintDetails /></RequireCitizen>} />
