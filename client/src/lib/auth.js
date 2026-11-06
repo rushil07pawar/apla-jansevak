@@ -181,6 +181,7 @@ export async function setupMainAdministrator(values) {
   if (!response.ok) {
     const error = new Error(data.message || 'Unable to complete initial administrator setup.')
     error.status = response.status
+    error.code = data.code || 'API_REQUEST_FAILED'
     throw error
   }
   return data

@@ -365,6 +365,8 @@ function AdminSetup() {
   const supabaseUnavailable = setupStatus.startsWith('SUPABASE_') ||
     setupStatus === 'supabase_unavailable'
   const apiUnavailable = ['API_UNREACHABLE', 'API_URL_MISSING', 'API_URL_INVALID'].includes(setupStatus)
+  const authUnavailable = setupStatus.startsWith('AUTH_')
+  const databaseUnavailable = setupStatus.startsWith('DATABASE_')
 
   return (
     <Layout>
@@ -403,8 +405,12 @@ function AdminSetup() {
                 ? 'Initial setup is closed'
                 : supabaseUnavailable
                   ? 'Supabase connection unavailable'
-                  : setupState.status === 'BACKEND_CONFIGURATION_MISSING'
+                  : databaseUnavailable
+                    ? 'Administrator database setup failed'
+                    : setupState.status === 'BACKEND_CONFIGURATION_MISSING'
                     ? 'Backend Supabase configuration unavailable'
+                    : authUnavailable
+                    ? 'Supabase Auth setup failed'
                     : apiUnavailable
                     ? 'Application API unavailable'
                     : 'Setup is unavailable'}</h2>

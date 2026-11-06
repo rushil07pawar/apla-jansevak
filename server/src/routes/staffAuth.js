@@ -68,15 +68,76 @@ function setupKeyMatches(candidate) {
     timingSafeEqual(expectedBytes, candidateBytes)
 }
 
-async function removeNewAuthUser(config, userId) {
-  const response = await fetch(`${config.url}/auth/v1/admin/users/${encodeURIComponent(userId)}`, {
-    method: 'DELETE',
+async function findStaffProfile(config, userId) {
+  const query = new URLSearchParams({
+    select: 'user_id,role,is_main_system_admin,department_id',
+    user_id: `eq.${userId}`,
+    limit: '1',
+  })
+  const response = await fetch(`${config.url}/rest/v1/staff_profiles?${query}`, {
     headers: {
       apikey: config.secretKey,
       authorization: `Bearer ${config.secretKey}`,
     },
+    signal: AbortSignal.timeout(5000),
   })
-  return response.ok
+  if (!response.ok) return null
+  const profiles = await response.json()
+  return Array.isArray(profiles) ? profiles[0] || null : null
+}
+
+async function setupFailureCode(response, { authService = false } = {}) {
+  const payload = await response.json().catch(() => ({}))
+  const code = typeof payload.code === 'string' ? payload.code : ''
+  const message = [payload.message, payload.msg, payload.error, payload.error_description]
+    .filter(value => typeof value === 'string')
+    .join(' ')
+  if (authService && (response.status === 401 || response.status === 403)) {
+    return 'AUTH_SERVER_KEY_REJECTED'
+  }
+  if (response.status === 401 || response.status === 403 || code === '42501') {
+    return 'DATABASE_PERMISSION_DENIED'
+  }
+  if (['42P01', '42703', '42883', 'PGRST202', 'PGRST204'].includes(code)) {
+    return 'DATABASE_MIGRATION_REQUIRED'
+  }
+  if (['23503', '23505', '23514'].includes(code)) {
+    return 'DATABASE_PROFILE_CONFLICT'
+  }
+  if (/already registered|already exists|duplicate/i.test(message)) {
+    return 'AUTH_ACCOUNT_ALREADY_EXISTS'
+  }
+  if (response.status === 400 || response.status === 409 || response.status === 422) {
+    return 'AUTH_REQUEST_REJECTED'
+  }
+  return 'SUPABASE_SERVICE_ERROR'
+}
+
+function setupFailureMessage(code) {
+  switch (code) {
+    case 'AUTH_ACCOUNT_ALREADY_EXISTS':
+      return 'An Auth account already uses one of these identifiers. It was not changed or promoted. Ask the operator to verify the existing account before continuing.'
+    case 'AUTH_REQUEST_REJECTED':
+      return 'Supabase Auth rejected the submitted account details. Check Auth configuration and whether the email or mobile is already registered.'
+    case 'AUTH_SERVICE_UNAVAILABLE':
+      return 'The backend could not complete the Supabase Auth request. Check backend-to-Supabase connectivity and server logs.'
+    case 'AUTH_SERVER_KEY_REJECTED':
+      return 'Supabase Auth rejected the backend server key. Verify the server-only Supabase key in the backend environment.'
+    case 'AUTH_CREATION_UNCONFIRMED':
+      return 'Supabase did not confirm whether the Auth account was created. Verify the existing account before attempting setup again.'
+    case 'DATABASE_MIGRATION_REQUIRED':
+      return 'The administrator database function or required schema is missing. Verify migrations 003–006 before retrying.'
+    case 'DATABASE_PERMISSION_DENIED':
+      return 'The database denied the administrator profile operation. Verify the service key and RPC grants; do not disable RLS.'
+    case 'DATABASE_PROFILE_CONFLICT':
+      return 'A profile or uniqueness constraint prevented setup. The existing Auth account was preserved; inspect its linked profiles before retrying.'
+    case 'DATABASE_CONNECTION_FAILED':
+      return 'Supabase could not be reached while creating the administrator profile. The Auth account was preserved; verify its profile before retrying.'
+    case 'AUTH_USER_CREATED_PROFILE_FAILED':
+      return 'The Auth account was created, but its administrator profile was not confirmed. The account was preserved; have the operator inspect it before retrying.'
+    default:
+      return 'Initial administrator setup failed. The account was not deleted; ask the operator to inspect safe stage/status diagnostics before retrying.'
+  }
 }
 
 router.get('/admin-setup/status', async (_req, res) => {
@@ -163,58 +224,81 @@ router.post('/admin-setup', adminSetupLimit, async (req, res) => {
 
   let authUserId = null
   let stage = 'checking_setup'
+  let failureCode = null
+  let failureStatus = null
   try {
     if (await mainAdministratorExists(config)) {
       return res.status(409).json({ message: 'Initial administrator setup is closed.' })
     }
 
     stage = 'creating_auth_user'
-    const createResponse = await fetch(`${config.url}/auth/v1/admin/users`, {
-      method: 'POST',
-      headers: {
-        apikey: config.secretKey,
-        authorization: `Bearer ${config.secretKey}`,
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({
-        email,
-        email_confirm: true,
-        phone: mobile,
-        phone_confirm: true,
-        password,
-        app_metadata: { account_type: 'staff' },
-        user_metadata: { full_name: fullName, username },
-      }),
-    })
-    if (createResponse.status === 409 || createResponse.status === 422) {
-      return res.status(409).json({ message: 'That email or mobile number is already registered. Use the existing staff login; accounts are not promoted or duplicated.' })
+    let createResponse
+    try {
+      createResponse = await fetch(`${config.url}/auth/v1/admin/users`, {
+        method: 'POST',
+        headers: {
+          apikey: config.secretKey,
+          authorization: `Bearer ${config.secretKey}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          email,
+          email_confirm: true,
+          phone: mobile,
+          phone_confirm: true,
+          password,
+          app_metadata: { account_type: 'staff' },
+          user_metadata: { full_name: fullName, username },
+        }),
+        signal: AbortSignal.timeout(10000),
+      })
+    } catch {
+      failureCode = 'AUTH_SERVICE_UNAVAILABLE'
+      throw new Error('Supabase Auth is unreachable.')
     }
-    if (!createResponse.ok) throw new Error('Auth user creation failed.')
+    if (!createResponse.ok) {
+      failureStatus = createResponse.status
+      failureCode = await setupFailureCode(createResponse, { authService: true })
+      if (failureCode === 'AUTH_ACCOUNT_ALREADY_EXISTS') {
+        return res.status(409).json({ code: failureCode, message: setupFailureMessage(failureCode) })
+      }
+      throw new Error('Supabase Auth rejected user creation.')
+    }
     const authUser = await createResponse.json()
-    if (typeof authUser?.id !== 'string') throw new Error('Auth did not return a user ID.')
+    if (typeof authUser?.id !== 'string') {
+      failureCode = 'AUTH_CREATION_UNCONFIRMED'
+      throw new Error('Auth did not confirm whether it created the user.')
+    }
     authUserId = authUser.id
 
     stage = 'creating_staff_profile'
-    const profileResponse = await fetch(`${config.url}/rest/v1/rpc/bootstrap_main_system_administrator`, {
-      method: 'POST',
-      headers: {
-        apikey: config.secretKey,
-        authorization: `Bearer ${config.secretKey}`,
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({ p_user_id: authUserId, p_full_name: fullName }),
-    })
+    let profileResponse
+    try {
+      profileResponse = await fetch(`${config.url}/rest/v1/rpc/bootstrap_main_system_administrator`, {
+        method: 'POST',
+        headers: {
+          apikey: config.secretKey,
+          authorization: `Bearer ${config.secretKey}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ p_user_id: authUserId, p_full_name: fullName }),
+        signal: AbortSignal.timeout(10000),
+      })
+    } catch {
+      failureCode = 'DATABASE_CONNECTION_FAILED'
+      throw new Error('Supabase database is unreachable.')
+    }
     if (!profileResponse.ok) {
-      const error = new Error('The database rejected the administrator bootstrap.')
-      error.bootstrapStatus = profileResponse.status
-      throw error
+      failureStatus = profileResponse.status
+      failureCode = await setupFailureCode(profileResponse)
+      throw new Error('The database rejected the administrator bootstrap.')
     }
     const profile = await profileResponse.json()
     if (profile?.user_id !== authUserId ||
         profile.department_id !== null ||
         profile.role !== 'administrator' ||
         profile.is_main_system_admin !== true) {
-      stage = 'verifying_staff_profile'
+      failureCode = 'AUTH_USER_CREATED_PROFILE_FAILED'
       throw new Error('The bootstrap returned an unexpected profile.')
     }
 
@@ -223,26 +307,43 @@ router.post('/admin-setup', adminSetupLimit, async (req, res) => {
       loginPath: '/staff-login',
     })
   } catch (error) {
-    let cleanupFailed = false
-    if (authUserId && stage !== 'verifying_staff_profile') {
-      try {
-        cleanupFailed = !(await removeNewAuthUser(config, authUserId))
-      } catch {
-        cleanupFailed = true
+    if (authUserId) {
+      const profile = await findStaffProfile(config, authUserId).catch(() => null)
+      if (profile?.role === 'administrator' &&
+          profile.is_main_system_admin === true &&
+          profile.department_id === null) {
+        console.info('Initial administrator profile verified after an interrupted bootstrap response.')
+        return res.status(201).json({
+          message: 'Main System Administrator created. Sign in through Municipal Staff Login.',
+          loginPath: '/staff-login',
+        })
       }
+      if (profile) failureCode = 'DATABASE_PROFILE_CONFLICT'
+      else if (!failureCode) failureCode = 'AUTH_USER_CREATED_PROFILE_FAILED'
+    } else if (!failureCode) {
+      failureCode = stage === 'creating_auth_user'
+        ? 'AUTH_SERVICE_UNAVAILABLE'
+        : 'SUPABASE_SERVICE_ERROR'
     }
+
     console.error('Initial administrator setup failed:', {
       stage,
-      status: error.bootstrapStatus || null,
-      cleanupFailed,
+      reason: failureCode,
+      status: failureStatus,
+      authUserCreated: Boolean(authUserId),
+      accountPreserved: Boolean(authUserId),
     })
-    if (cleanupFailed) {
-      return res.status(503).json({ message: 'Setup could not be completed, and cleanup needs operator review. Contact the deployment operator before retrying.' })
+    if (authUserId) {
+      return res.status(failureCode === 'DATABASE_PROFILE_CONFLICT' ? 409 : 503).json({
+        code: failureCode,
+        authUserCreated: true,
+        message: setupFailureMessage(failureCode),
+      })
     }
-    if (stage === 'creating_staff_profile' && await mainAdministratorExists(config).catch(() => false)) {
-      return res.status(409).json({ message: 'Initial administrator setup is closed.' })
-    }
-    return res.status(503).json({ message: 'Unable to complete initial administrator setup. Check server configuration and database migrations, then contact the operator.' })
+    return res.status(failureCode === 'AUTH_ACCOUNT_ALREADY_EXISTS' ? 409 : 502).json({
+      code: failureCode,
+      message: setupFailureMessage(failureCode),
+    })
   }
 })
 
