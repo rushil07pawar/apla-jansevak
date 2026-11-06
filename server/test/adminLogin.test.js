@@ -3,7 +3,7 @@ import { createServer } from 'node:http'
 import { test } from 'node:test'
 import { createApp } from '../src/app.js'
 
-test('admin login grants sessions only to database-verified Main System Administrators', async () => {
+test('email-session verification grants access only to Main System Administrators', async () => {
   const originalFetch = globalThis.fetch
   const originalEnv = Object.fromEntries([
     'SUPABASE_URL',
@@ -12,7 +12,7 @@ test('admin login grants sessions only to database-verified Main System Administ
     'NODE_ENV',
   ].map(key => [key, process.env[key]]))
   let profileKind = 'administrator'
-  const authRequests = []
+  let userLookups = 0
 
   process.env.SUPABASE_URL = 'https://project-ref.supabase.co'
   process.env.SUPABASE_PUBLISHABLE_KEY = 'test-publishable-key'
@@ -21,11 +21,18 @@ test('admin login grants sessions only to database-verified Main System Administ
 
   globalThis.fetch = async (input, options = {}) => {
     const url = new URL(input)
-    if (url.pathname === '/auth/v1/token') {
-      authRequests.push({
-        apiKey: options.headers.apikey,
-        body: JSON.parse(options.body),
+    if (url.pathname === '/auth/v1/user') {
+      userLookups += 1
+      assert.equal(options.headers.apikey, 'test-publishable-key')
+      assert.equal(options.headers.authorization, 'Bearer signed-in-user-token')
+      return Response.json({
+        id: 'auth-user-test',
+        email: 'account@example.test',
+        email_confirmed_at: 'confirmed',
       })
+    }
+
+    if (url.pathname === '/auth/v1/token') {
       return Response.json({
         access_token: 'test-access-token',
         refresh_token: 'test-refresh-token',
@@ -73,50 +80,44 @@ test('admin login grants sessions only to database-verified Main System Administ
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
     const origin = `http://127.0.0.1:${server.address().port}`
 
-    async function signIn(mobile, path = '/api/staff-auth/admin-login') {
+    async function verifyAdmin(path = '/api/staff-auth/admin-login') {
       return originalFetch(`${origin}${path}`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          mobile,
-          password: 'test-only-password',
-          role: 'administrator',
-        }),
+        headers: { authorization: 'Bearer signed-in-user-token' },
       })
     }
 
-    const adminResponse = await signIn('9876543210')
+    const adminResponse = await verifyAdmin()
     assert.equal(adminResponse.status, 200)
     const adminData = await adminResponse.json()
     assert.equal(adminData.staff.role, 'administrator')
     assert.equal(adminData.staff.is_main_system_admin, true)
     assert.equal(adminData.staff.department_id, null)
-    assert.equal(authRequests[0].apiKey, 'test-publishable-key')
-    assert.deepEqual(authRequests[0].body, {
-      phone: '+919876543210',
-      password: 'test-only-password',
-    })
 
     profileKind = 'ordinary_staff'
-    const staffResponse = await signIn('9876543211')
+    const staffResponse = await verifyAdmin()
     assert.equal(staffResponse.status, 401)
     assert.deepEqual(await staffResponse.json(), { message: 'Unable to sign in with those credentials.' })
-    const municipalStaffLogin = await signIn('9876543211', '/api/staff-auth/login')
+    const municipalStaffLogin = await originalFetch(`${origin}/api/staff-auth/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ mobile: '9876543210', password: 'test-only-password' }),
+    })
     assert.equal(municipalStaffLogin.status, 200)
 
     profileKind = 'citizen'
-    const citizenResponse = await signIn('9876543212')
+    const citizenResponse = await verifyAdmin()
     assert.equal(citizenResponse.status, 401)
     assert.deepEqual(await citizenResponse.json(), { message: 'Unable to sign in with those credentials.' })
 
     profileKind = 'citizen'
-    const callsBeforeRateLimit = authRequests.length
+    const callsBeforeRateLimit = userLookups
     let rateLimitedResponse
-    for (let attempt = 0; attempt < 6; attempt += 1) {
-      rateLimitedResponse = await signIn('9876543213')
+    for (let attempt = 0; attempt < 11; attempt += 1) {
+      rateLimitedResponse = await verifyAdmin()
     }
     assert.equal(rateLimitedResponse.status, 429)
-    assert.equal(authRequests.length - callsBeforeRateLimit, 5)
+    assert.equal(userLookups - callsBeforeRateLimit, 7)
   } finally {
     await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
     globalThis.fetch = originalFetch

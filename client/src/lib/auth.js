@@ -150,13 +150,43 @@ export function signInStaff({ mobile, password }) {
   })
 }
 
-export function signInMainAdministrator({ username, password }) {
-  return signInStaffWithEndpoint({
-    mobile: username,
-    password,
-    endpoint: '/api/staff-auth/admin-login',
-    administratorOnly: true,
-  })
+async function verifyMainAdministratorSession(accessToken) {
+  let response
+  try {
+    response = await fetch(`${requireApiUrl()}/api/staff-auth/admin-login`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${accessToken}` },
+    })
+  } catch (error) {
+    if (error instanceof TypeError) {
+      throw new Error('Could not reach the administrator authorization service. Check the API URL and your network, then try again.')
+    }
+    throw error
+  }
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(data.message || 'Unable to verify Main System Administrator access.')
+  if (data.staff?.role !== 'administrator' || data.staff?.is_main_system_admin !== true) {
+    throw new Error('Unable to verify Main System Administrator access.')
+  }
+  return data
+}
+
+export async function signInMainAdministrator({ email, password }) {
+  let result
+  try {
+    result = await requireSupabase().auth.signInWithPassword({ email, password })
+  } catch (error) {
+    throw withRequestContext(error, 'signing in to the administrator account')
+  }
+  const { data, error } = result
+  if (error) throw error
+  try {
+    const verification = await verifyMainAdministratorSession(data.session.access_token)
+    return { ...data, ...verification }
+  } catch (error) {
+    await requireSupabase().auth.signOut({ scope: 'local' })
+    throw error
+  }
 }
 
 export async function getMainAdministratorSetupStatus() {
@@ -182,12 +212,31 @@ export async function getMainAdministratorSetupStatus() {
 }
 
 export async function setupMainAdministrator(values) {
+  const client = requireSupabase()
+  let authResult
+  try {
+    authResult = await client.auth.signInWithPassword({
+      email: values.email,
+      password: values.password,
+    })
+  } catch (error) {
+    throw withRequestContext(error, 'verifying the citizen account to promote')
+  }
+  const { data: authData, error: authError } = authResult
+  if (authError) throw authError
+  if (!authData.session?.access_token) {
+    throw new Error('The citizen account did not provide a verified sign-in session.')
+  }
+
   let response
   try {
-    response = await fetch(`${requireApiUrl()}/api/staff-auth/admin-setup`, {
+    response = await fetch(`${requireApiUrl()}/api/staff-auth/admin-promote`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(values),
+      headers: {
+        authorization: `Bearer ${authData.session.access_token}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ setupKey: values.setupKey }),
     })
   } catch (error) {
     if (error.code === 'API_URL_MISSING') throw error
@@ -198,12 +247,12 @@ export async function setupMainAdministrator(values) {
     }
     throw error
   }
-  const data = await response.json().catch(() => ({}))
+  const responseData = await response.json().catch(() => ({}))
   if (!response.ok) {
-    const error = new Error(data.message || 'Unable to complete initial administrator setup.')
+    const error = new Error(responseData.message || 'Unable to complete initial administrator setup.')
     error.status = response.status
-    error.code = data.code || 'API_REQUEST_FAILED'
+    error.code = responseData.code || 'API_REQUEST_FAILED'
     throw error
   }
-  return data
+  return responseData
 }

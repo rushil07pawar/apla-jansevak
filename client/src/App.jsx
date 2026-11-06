@@ -286,7 +286,7 @@ function StaffAuth() {
 }
 
 function AdminLogin() {
-  const [username, setUsername] = useState('')
+  const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [message, setMessage] = useState('')
@@ -309,18 +309,14 @@ function AdminLogin() {
   async function handleSubmit(event) {
     event.preventDefault()
     setMessage('')
-    if (!/^[6-9][0-9]{9}$/.test(username)) {
-      setMessage('Enter your registered username as exactly 10 digits.')
-      return
-    }
-    if (!password) {
-      setMessage('Enter your password.')
+    if (!email.trim() || !password) {
+      setMessage('Enter your administrator email and password.')
       return
     }
 
     setBusy(true)
     try {
-      await signInMainAdministrator({ username, password })
+      await signInMainAdministrator({ email: email.trim(), password })
       navigate('/admin-dashboard', { replace: true })
     } catch (error) {
       setMessage(error.message || 'Unable to sign in with those credentials.')
@@ -335,24 +331,18 @@ function AdminLogin() {
         <div className="auth-intro">
           <p className="eyebrow">Secure administrator access</p>
           <h1>Main System Administrator Login</h1>
-          <p>Sign in using the 10-digit mobile username and password registered for the Main System Administrator.</p>
+          <p>Sign in with the email address and password of the account promoted to Main System Administrator.</p>
         </div>
         <form className="form-card" onSubmit={handleSubmit} noValidate>
           <label className="field">
-            <span>Username (10-digit mobile number)</span>
+            <span>Email address</span>
             <input
-              type="text"
-              inputMode="numeric"
+              type="email"
               autoComplete="username"
-              placeholder="9876543210"
-              pattern="[6-9][0-9]{9}"
-              maxLength={10}
-              value={username}
-              onChange={event => setUsername(event.target.value.replace(/[^0-9]/g, '').slice(0, 10))}
-              aria-invalid={Boolean(username) && !/^[6-9][0-9]{0,9}$/.test(username)}
+              value={email}
+              onChange={event => setEmail(event.target.value)}
               required
             />
-            <small className="field-hint">Enter exactly 10 digits, without +91, spaces, or symbols.</small>
           </label>
           <label className="field">
             <span>Password</span>
@@ -375,7 +365,7 @@ function AdminLogin() {
               </button>
             </span>
           </label>
-          <button className="button button-primary form-submit" type="submit" disabled={busy || !username || !password}>
+          <button className="button button-primary form-submit" type="submit" disabled={busy || !email || !password}>
             {busy ? 'Please wait…' : 'Administrator Login'} <ArrowRight size={18} />
           </button>
           {message && <p className="notice notice-error" role="alert">{message}</p>}
@@ -390,14 +380,11 @@ function AdminLogin() {
 function AdminSetup() {
   const [setupState, setSetupState] = useState({ status: 'checking' })
   const [values, setValues] = useState({
-    fullName: '',
-    mobile: '',
+    email: '',
     password: '',
-    confirmPassword: '',
     setupKey: '',
   })
   const [showPassword, setShowPassword] = useState(false)
-  const [showConfirmPassword, setShowConfirmPassword] = useState(false)
   const [showSetupKey, setShowSetupKey] = useState(false)
   const [busy, setBusy] = useState(false)
 
@@ -419,16 +406,10 @@ function AdminSetup() {
 
   async function handleSubmit(event) {
     event.preventDefault()
-    const name = values.fullName.trim()
-    const mobile = values.mobile.trim()
-    if (name.length < 2 || name.length > 100 ||
-        !/^[6-9][0-9]{9}$/.test(mobile) ||
-        values.password.length < 12 || values.password.length > 128 ||
-        values.password !== values.confirmPassword ||
-        !values.setupKey) {
+    if (!values.email.trim() || !values.password || !values.setupKey) {
       setSetupState({
         status: 'open',
-        message: 'Check the full name, 10-digit mobile, matching 12–128 character passwords, and setup key.',
+        message: 'Enter the existing citizen account email, password, and setup key.',
       })
       return
     }
@@ -436,10 +417,8 @@ function AdminSetup() {
     setSetupState({ status: 'submitting' })
     try {
       const result = await setupMainAdministrator({
-        fullName: name,
-        mobile,
+        email: values.email.trim(),
         password: values.password,
-        confirmPassword: values.confirmPassword,
         setupKey: values.setupKey,
       })
       setSetupState({ status: 'success', message: result.message })
@@ -473,28 +452,26 @@ function AdminSetup() {
         <div className="auth-intro">
           <p className="eyebrow">One-time secure registration</p>
           <h1>Main System Administrator Registration</h1>
-          <p>Creates the first global administrator only. The server and database permanently close setup after that account is created.</p>
-          <p><strong>Designation:</strong> Developer / Main System Administrator</p>
+          <p>Promotes your existing confirmed Citizen account. No new Auth user is created, and setup closes permanently after promotion.</p>
         </div>
         <div className="form-card">
           {setupState.status === 'checking' || setupState.status === 'submitting' ? (
-            <LoadingPage text={setupState.status === 'checking' ? 'Checking secure setup status…' : 'Creating the first administrator…'} />
+            <LoadingPage text={setupState.status === 'checking' ? 'Checking secure setup status…' : 'Promoting the existing account…'} />
           ) : setupState.status === 'success' ? (
             <>
-              <h2>Initial setup complete</h2>
+              <h2>Promotion complete</h2>
               <p className="notice notice-success" role="status">{setupState.message}</p>
-              <p>Administrator registration is now closed. Sign in with the mobile number and password you just registered.</p>
+              <p>The existing Auth account, email, password, citizen profile, and UUID were preserved. Administrator setup is now permanently closed.</p>
               <Link className="button button-primary form-submit" to="/admin-login">Go to Administrator Login <ArrowRight size={18} /></Link>
             </>
           ) : setupState.status === 'open' ? (
             <form onSubmit={handleSubmit}>
-              <label className="field"><span>Full name</span><input autoComplete="name" maxLength={100} value={values.fullName} onChange={event => updateValue('fullName', event.target.value)} required /></label>
-              <label className="field"><span>10-digit mobile number</span><input type="text" inputMode="numeric" autoComplete="tel-national" maxLength={10} pattern="[6-9][0-9]{9}" value={values.mobile} onChange={event => updateValue('mobile', event.target.value.replace(/[^0-9]/g, '').slice(0, 10))} required /><small className="field-hint">This will be the administrator login username.</small></label>
-              <label className="field"><span>Password</span><span className="password-input-wrap"><input type={showPassword ? 'text' : 'password'} autoComplete="new-password" minLength={12} maxLength={128} value={values.password} onChange={event => updateValue('password', event.target.value)} required /><button className="password-visibility" type="button" onClick={() => setShowPassword(value => !value)} aria-label={showPassword ? 'Hide password' : 'Show password'} aria-pressed={showPassword}>{showPassword ? <EyeOff size={19} /> : <Eye size={19} />}</button></span><small className="field-hint">Use 12–128 characters.</small></label>
-              <label className="field"><span>Confirm password</span><span className="password-input-wrap"><input type={showConfirmPassword ? 'text' : 'password'} autoComplete="new-password" minLength={12} maxLength={128} value={values.confirmPassword} onChange={event => updateValue('confirmPassword', event.target.value)} required /><button className="password-visibility" type="button" onClick={() => setShowConfirmPassword(value => !value)} aria-label={showConfirmPassword ? 'Hide confirmation' : 'Show confirmation'} aria-pressed={showConfirmPassword}>{showConfirmPassword ? <EyeOff size={19} /> : <Eye size={19} />}</button></span></label>
+              <p>Promotes your existing confirmed Citizen account; this page does not create an account or change its password.</p>
+              <label className="field"><span>Existing citizen email address</span><input type="email" autoComplete="username" value={values.email} onChange={event => updateValue('email', event.target.value)} required /></label>
+              <label className="field"><span>Citizen account password</span><span className="password-input-wrap"><input type={showPassword ? 'text' : 'password'} autoComplete="current-password" value={values.password} onChange={event => updateValue('password', event.target.value)} required /><button className="password-visibility" type="button" onClick={() => setShowPassword(value => !value)} aria-label={showPassword ? 'Hide password' : 'Show password'} aria-pressed={showPassword}>{showPassword ? <EyeOff size={19} /> : <Eye size={19} />}</button></span></label>
               <label className="field"><span>One-time administrator setup key</span><span className="password-input-wrap"><input type={showSetupKey ? 'text' : 'password'} autoComplete="off" minLength={32} value={values.setupKey} onChange={event => updateValue('setupKey', event.target.value)} required /><button className="password-visibility" type="button" onClick={() => setShowSetupKey(value => !value)} aria-label={showSetupKey ? 'Hide setup key' : 'Show setup key'} aria-pressed={showSetupKey}>{showSetupKey ? <EyeOff size={19} /> : <Eye size={19} />}</button></span><small className="field-hint">Enter the key configured privately on the Express server. Never share it in chat.</small></label>
               {setupState.message && <p className="notice notice-error" role="alert">{setupState.message}</p>}
-              <button className="button button-primary form-submit" type="submit" disabled={busy}>Create Main System Administrator <ArrowRight size={18} /></button>
+              <button className="button button-primary form-submit" type="submit" disabled={busy}>Promote Existing Account <ArrowRight size={18} /></button>
             </form>
           ) : (
             <>
