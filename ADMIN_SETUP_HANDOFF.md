@@ -1,74 +1,44 @@
-# AplaJansevak Main Administrator Setup — Handoff
+# AplaJansevak Main System Administrator — Handoff
 
-This note summarizes the administrator setup work and the current failure state for another assistant or operator. It contains no credentials or personal account details.
+## Current design
 
-## Goal
+- Frontend: React + Vite (`client/`); backend: Express (`server/`); identity/database: Supabase Auth and PostgreSQL.
+- Administrator login is `/admin-login` and uses the existing Auth account's email and password.
+- Initial promotion is at `/admin-register`. It requires an authenticated, confirmed Citizen account and a private setup key sent only to Express.
+- Express verifies the bearer token with Supabase Auth and obtains the UUID from that verified response. The browser cannot choose the UUID, assign the role, or create an Auth user.
+- A service-role-only RPC promotes the existing UUID to `staff_profiles` with `role='administrator'`, `is_main_system_admin=true`, `department_id=NULL`, `active=true`, and `approved=true`. It preserves the Auth account and Citizen profile.
+- The database setup latch is independent of the administrator profile. Logout, deactivation, or Auth-user deletion does not reopen setup. A partial unique index and row-locked setup claim serialize promotions.
+- The promoted identity is treated as staff by the Citizen identity guard. Citizen-only actions will therefore no longer be available to this account; other citizen and staff flows remain unchanged.
 
-Create the application owner as the one global Main System Administrator, then sign in through the existing Municipal Staff Login page. The administrator must have no municipal department assignment (`department_id = NULL`) and must not be restricted to a ward.
+## Relevant local changes
 
-## Existing implementation
+- Migration 007 provides the permanent setup latch and atomic setup claim/release functions.
+- Migration 008 makes contact/mobile optional for the global administrator and adds the Citizen-promotion RPC.
+- `server/src/routes/staffAuth.js` contains token verification, promotion, setup status, administrator authorization, safe diagnostics, and unchanged mobile/password staff login.
+- `client/src/lib/auth.js` and `client/src/App.jsx` contain the email/password administrator login and existing-account promotion UI.
+- `docs/staff-management.md` contains related operations and API documentation.
 
-- Frontend: React + Vite in `client/`.
-- Backend: Express in `server/`, deployed separately from the Vercel frontend.
-- Authentication and database: Supabase Auth and PostgreSQL.
-- Setup page: `/admin-setup`; staff login: `/staff-login`; admin dashboard: `/admin-dashboard`.
-- The setup API creates a Supabase Auth user using server-side credentials, sets trusted `app_metadata.account_type = 'staff'`, confirms the phone, then calls the service-role-only database function `public.bootstrap_main_system_administrator(uuid, text)`.
-- That database function inserts the administrator profile and audit record. It requires a confirmed Indian phone, trusted staff app metadata, and no existing Main System Administrator. It assigns `role = 'administrator'`, `is_main_system_admin = true`, and `department_id = NULL`.
-- The global administrator migration also contains database authorization and RLS changes. The setup procedure is documented in `docs/staff-management.md`.
-- The intended migration order is foundation migration first, then migrations `20261106_003_staff_management.sql`, `20261106_004_admin_managed_staff_passwords.sql`, `20261106_005_staff_designations_and_roles.sql`, and `20261106_006_global_system_administrator.sql`. Verify what is already applied; do not blindly rerun migrations.
+Migrations 007 and 008 have **not** been run against production by the assistant. Check actual migration state and review dependencies before applying anything; do not rerun migrations blindly.
 
-## What happened
+## Previous failure status
 
-1. The first administrator setup was attempted through `/admin-setup`, but the frontend displayed:
-   > Unable to complete initial administrator setup. Check server configuration and database migrations, then contact the operator.
-2. The user later reported deleting all users from the database. The exact scope and whether this means Supabase Auth users, application profile rows, or both has not been independently verified.
-3. A read-only Supabase SQL query returned:
-   - `bootstrap_function_installed = true`
-   - `main_admin_count = 0`
-4. Earlier live checks of the deployed Render API reported:
-   - Express health endpoint: HTTP 200.
-   - Supabase health endpoint: HTTP 200.
-   - Administrator setup status: HTTP 200, setup available.
-   - CORS preflight from `https://apla-jansevak.vercel.app`: HTTP 204 with the expected origin allowed.
-5. After the latest setup attempt, the user checked Supabase Authentication → Users and reported that no Auth user was visible.
-6. No detailed Render log fields were provided. The displayed generic error is not sufficient to determine the failing stage. It could have failed before Auth creation, or a deployed handler could have removed a just-created Auth user after profile bootstrap failed.
-7. No administrator account was created by the assistant. No production SQL/migrations were executed by the assistant, and no deployment or push was performed by the assistant.
+The earlier `/admin-setup` flow attempted Auth-user creation and showed a generic failure. The reported log contained only `stage=creating_auth_user`, `status=null`, and `cleanupFailed=false`; no detailed Render logs for that attempt were provided. That evidence is insufficient to identify whether the cause was request construction, network/DNS/TLS/timeout, configuration, or another failure. The current implementation does not create Auth users, so that old stage no longer applies.
 
-## Current diagnosis
+Do not claim promotion succeeded until the linked profile and closed setup state are independently verified in Supabase. No promotion, production SQL/migration, deployment, or push was performed by the assistant.
 
-The database bootstrap function exists and no Main System Administrator profile is currently reported by the provided query. Earlier checks showed that the backend could reach Supabase at that earlier time. These facts do **not** prove that the deployed registration endpoint can create an Auth user and call the bootstrap RPC successfully.
+## Safe operator steps
 
-The exact cause remains unknown until the Render logs for the latest attempt are inspected. Useful non-secret diagnostic fields include:
+1. In Supabase, verify the existing account is email-confirmed and has its expected Citizen `profiles` row. Do not copy email addresses, tokens, credentials, or full Auth records into chat.
+2. Verify migrations 003–007 and the relevant functions/indexes are present; review and apply migration 008 manually only after confirming the state and obtaining explicit approval.
+3. Generate a new high-entropy setup key privately and set it as `ADMIN_SETUP_KEY` in the Express/Render environment. Never put it in a `VITE_` variable or commit it. The prior example contained a key-looking value and was replaced locally with a placeholder; rotate any corresponding real value if it was ever used or exposed.
+4. Configure backend variables: `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SECRET_KEY`, `ADMIN_SETUP_KEY`, and `FRONTEND_URL`. The secret key and setup key belong only on the backend.
+5. Configure frontend variables: `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`, and `VITE_API_URL`. These must not contain the service-role/secret key or setup key.
+6. After separately approving migration and deployment, visit `/admin-register`, sign in with the existing Citizen email/password, and enter the private setup key. If the result is uncertain, check setup state and the linked profile before retrying.
+7. Verify the same Auth UUID is linked to exactly one global administrator profile, with `department_id=NULL`, and setup is closed. Then sign in at `/admin-login` and confirm access to `/admin-dashboard`.
+8. Remove `ADMIN_SETUP_KEY` from the backend environment after successful promotion. Any recovery must use a separate owner-authorized procedure; do not reset the latch or edit administrator roles directly.
 
-- Registration stage (for example, Auth creation or staff-profile creation).
-- HTTP status.
-- Supabase/PostgREST error code and safe reason.
-- Whether a new Auth user was created or preserved.
+## Diagnostics and safety
 
-Never request or share passwords, setup keys, service-role keys, access tokens, email addresses, phone numbers, or full Auth user records in chat.
+Render diagnostics may include the stage, failure category, HTTP status, safe Supabase error code/message, request/response indicators, and Supabase hostname/path. Never share passwords, setup keys, API keys, bearer/access/refresh tokens, email addresses, mobile numbers, request bodies, or full Auth responses.
 
-## Important safety notes
-
-- Do not retry `/admin-setup` until the deployed backend failure is understood. Check Supabase Authentication → Users and related profile rows first to avoid creating a duplicate.
-- Do not manually insert into `auth.users`, directly set an administrator role in Table Editor, disable RLS, or expose the Supabase service-role/secret key in frontend code.
-- The database RPC is intentionally restricted to the service role; use the supported backend setup process.
-- Since the user reports deleting all users, first establish exactly what was deleted and whether a backup/recovery is needed. Do not delete additional records or attempt a broad restoration without confirming the affected tables and taking an appropriate backup.
-- Do not apply migrations in production without explicit approval. Confirm migration state and review dependencies before applying any pending migrations.
-- If an Auth user is present but no administrator profile exists, preserve it and inspect its identity/profile state before repairing. Do not create another account or delete the existing one blindly.
-
-## Recommended next steps
-
-1. In Render Dashboard → the Express service → Logs, inspect the log event at the time of the latest setup attempt. Share only stage, status, safe error code/reason, and account-preservation outcome.
-2. In Supabase, read-only inspect Authentication → Users and the relevant profile tables. First inspect actual table columns; do not disclose personal fields in the report.
-3. Verify that migrations 003–006 are applied in the intended order and that the RPC signature/grant and required schema are present. The function-existence check alone does not verify all schema, grants, or deployed backend configuration.
-4. Use the log evidence to fix the specific backend/database issue. Do not weaken RLS or add manual administrator SQL.
-5. Only after the registration flow succeeds, verify the linked `staff_profiles` row, then sign in at `/staff-login` and verify redirect/access to `/admin-dashboard`.
-6. Keep `/admin-setup` until a real administrator login has been verified. Remove the one-time setup key from the backend environment after successful setup.
-
-## Prompt for another assistant
-
-I need help diagnosing my AplaJansevak Main System Administrator setup. The app is React/Vite (`client/`), Express (`server/`), and Supabase Auth/PostgreSQL. The temporary setup page is `/admin-setup`; normal staff login is `/staff-login`.
-
-The setup page returned: “Unable to complete initial administrator setup. Check server configuration and database migrations, then contact the operator.” A read-only Supabase query showed `bootstrap_function_installed = true` and `main_admin_count = 0`. Earlier checks showed Render Express health 200, Supabase health 200, setup status available, and Vercel CORS preflight 204. After the latest attempt, I checked Supabase Authentication → Users and did not see a user. I also reported that I deleted all users, but I have not established whether that means Auth users, profile rows, or both. I have not provided the matching Render logs, so the exact failure stage is unknown.
-
-Please inspect the repository and give a safe, evidence-based diagnosis. Do not create/delete/promote accounts, run production SQL/migrations, disable RLS, deploy, or push. First tell me what safe Render log fields and read-only Supabase checks are needed. Do not ask me to paste passwords, setup keys, service-role keys, tokens, emails, phone numbers, or full user records. Preserve any existing account and avoid duplicates. The intended administrator profile is `role='administrator'`, `is_main_system_admin=true`, and `department_id=NULL`, created through the protected server-side bootstrap process.
+Do not manually insert into `auth.users`, create a duplicate Auth user, edit the role in Table Editor, disable RLS, delete accounts/data, run production migrations, deploy, or push without explicit authorization.

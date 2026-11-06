@@ -14,6 +14,61 @@ const router = Router()
 const genericFailure = { message: 'Unable to sign in with those credentials.' }
 const invalidMobile = { message: 'Enter a valid Indian mobile number using exactly 10 digits.' }
 const ip = req => req.ip || 'unknown'
+const adminSupabasePaths = {
+  setupState: '/rest/v1/main_admin_setup_state',
+  authUser: '/auth/v1/user',
+  adminProfile: '/rest/v1/staff_profiles',
+  claimSetup: '/rest/v1/rpc/claim_main_system_administrator_setup',
+  promoteCitizen: '/rest/v1/rpc/promote_citizen_to_main_system_administrator',
+  releaseClaim: '/rest/v1/rpc/release_main_system_administrator_setup',
+}
+
+function safeDiagnosticMessage(value) {
+  if (typeof value !== 'string') return null
+  return value
+    .replace(/\b[\w.+-]+@[\w.-]+\.[A-Z]{2,}\b/gi, '[redacted-email]')
+    .replace(/\+?91[\s().-]*[6-9](?:[\s().-]*\d){9}\b/g, '[redacted-mobile]')
+    .replace(/\b[6-9]\d{9}\b/g, '[redacted-mobile]')
+    .replace(/Bearer\s+\S+/gi, 'Bearer [redacted]')
+    .replace(/\beyJ[A-Za-z0-9._-]+/g, '[redacted-token]')
+    .replace(/\b(password|secret|setup[_ -]?key|api[_ -]?key|token)\b\s*[:=]\s*["']?[^,\s"']+/gi, '$1=[redacted]')
+    .replace(/[\r\n\t]+/g, ' ')
+    .slice(0, 240)
+}
+
+function adminFailureType(error, status) {
+  if (Number.isInteger(status)) return 'http'
+  const causeCode = error?.cause?.code || error?.code
+  if (error?.name === 'TimeoutError' || error?.name === 'AbortError' ||
+      ['ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT'].includes(causeCode)) return 'timeout'
+  if (['ENOTFOUND', 'EAI_AGAIN', 'ENODATA'].includes(causeCode)) return 'dns'
+  if (/certificate|tls|ssl/i.test(`${error?.message || ''} ${error?.cause?.message || ''}`)) return 'tls'
+  if (error instanceof TypeError || causeCode) return 'network'
+  return 'request'
+}
+
+function logAdminSupabaseFailure(label, stage, config, path, error, details = {}) {
+  const status = Number.isInteger(details.status) ? details.status : null
+  const causeCode = error?.cause?.code || error?.code || null
+  const supabaseErrorCode = typeof details.code === 'string' &&
+    /^[A-Z0-9_.-]{1,100}$/i.test(details.code)
+    ? details.code
+    : null
+  console.error(label, {
+    stage,
+    failureType: adminFailureType(error, status),
+    exceptionName: error?.name || 'Error',
+    exceptionMessage: safeDiagnosticMessage(error?.message),
+    causeCode: typeof causeCode === 'string' && /^[A-Z0-9_]+$/i.test(causeCode) ? causeCode : null,
+    requestInitiated: true,
+    httpResponseReceived: status !== null,
+    status,
+    supabaseErrorCode,
+    supabaseErrorMessage: safeDiagnosticMessage(details.message),
+    host: new URL(config.url).hostname,
+    path,
+  })
+}
 const staffLoginLimit = fixedWindowRateLimit({
   windowMs: 15 * 60 * 1000,
   max: 5,
@@ -45,9 +100,16 @@ async function mainAdministratorSetupState(config) {
       },
       signal: AbortSignal.timeout(5000),
     })
-  } catch {
-    const error = new Error('Supabase could not be reached.')
+  } catch (cause) {
+    const error = new Error('Supabase could not be reached.', { cause })
     error.code = 'SUPABASE_UNAVAILABLE'
+    logAdminSupabaseFailure(
+      'Admin promotion setup-status query failed:',
+      'checking_setup_state',
+      config,
+      adminSupabasePaths.setupState,
+      error,
+    )
     throw error
   }
   if (!response.ok) {
@@ -60,6 +122,14 @@ async function mainAdministratorSetupState(config) {
         ? 'DATABASE_MIGRATION_REQUIRED'
         : 'SUPABASE_QUERY_FAILED'
     error.status = response.status
+    logAdminSupabaseFailure(
+      'Admin promotion setup-status query failed:',
+      'checking_setup_state',
+      config,
+      adminSupabasePaths.setupState,
+      error,
+      { status: response.status, code, message: payload.message },
+    )
     throw error
   }
   const rows = await response.json()
@@ -102,12 +172,47 @@ async function authenticatedUser(config, req) {
       },
       signal: AbortSignal.timeout(8000),
     })
-  } catch {
-    const error = new Error('Supabase authentication could not be verified.')
+  } catch (cause) {
+    const error = new Error('Supabase authentication could not be verified.', { cause })
     error.status = 503
+    logAdminSupabaseFailure(
+      'Administrator identity verification failed:',
+      'verifying_auth_user',
+      config,
+      adminSupabasePaths.authUser,
+      error,
+    )
     throw error
   }
-  if (!response.ok) return null
+  if (!response.ok) {
+    if (response.status === 403 || response.status === 429 || response.status >= 500) {
+      const payload = await response.json().catch(() => ({}))
+      const error = new Error(response.status === 403
+        ? 'Supabase rejected the configured authentication key.'
+        : 'Supabase authentication could not be verified.')
+      error.status = response.status === 429 ? 429 : 503
+      error.upstreamStatus = response.status
+      error.code = response.status === 403
+        ? 'SUPABASE_AUTH_CONFIGURATION'
+        : response.status === 429
+          ? 'SUPABASE_AUTH_RATE_LIMITED'
+          : 'SUPABASE_AUTH_UPSTREAM_FAILURE'
+      logAdminSupabaseFailure(
+        'Administrator identity verification failed:',
+        'verifying_auth_user',
+        config,
+        adminSupabasePaths.authUser,
+        error,
+        {
+          status: response.status,
+          code: payload.code || payload.error_code,
+          message: payload.msg || payload.message || payload.error_description,
+        },
+      )
+      throw error
+    }
+    return null
+  }
   const user = await response.json().catch(() => null)
   return typeof user?.id === 'string' ? user : null
 }
@@ -128,6 +233,7 @@ async function mainAdministratorProfile(config, userId) {
   if (!response.ok) {
     const error = new Error('Unable to verify Main System Administrator access.')
     error.status = 503
+    error.upstreamStatus = response.status
     throw error
   }
   const profiles = await response.json()
@@ -214,18 +320,21 @@ router.post('/admin-promote', adminPromotionLimit, async (req, res) => {
     return res.status(403).json({ message: 'The setup key is invalid or initial setup is closed.' })
   }
 
+  let stage = 'verifying_auth_user'
   try {
     const user = await authenticatedUser(config, req)
     if (!user || !user.email || !user.email_confirmed_at) {
       return res.status(401).json({ message: 'Sign in with the confirmed citizen email account you intend to promote.' })
     }
 
+    stage = 'checking_setup_state'
     const setup = await mainAdministratorSetupState(config)
     if (setup.completed || setup.inProgress) {
       return res.status(409).json({ message: 'Initial administrator promotion is closed or already in progress.' })
     }
 
     const claimId = randomUUID()
+    stage = 'claiming_setup'
     const claimResponse = await fetch(`${config.url}/rest/v1/rpc/claim_main_system_administrator_setup`, {
       method: 'POST',
       headers: {
@@ -237,11 +346,26 @@ router.post('/admin-promote', adminPromotionLimit, async (req, res) => {
       signal: AbortSignal.timeout(10000),
     })
     if (!claimResponse.ok) {
+      const payload = await claimResponse.json().catch(() => ({}))
+      const claimError = new Error('Administrator setup claim was rejected.')
+      logAdminSupabaseFailure(
+        'Main System Administrator setup claim failed:',
+        stage,
+        config,
+        adminSupabasePaths.claimSetup,
+        claimError,
+        {
+          status: claimResponse.status,
+          code: payload.code,
+          message: payload.message || payload.msg,
+        },
+      )
       return res.status(claimResponse.status === 409 ? 409 : 503).json({
         message: 'Initial administrator promotion is closed or another request is in progress.',
       })
     }
 
+    stage = 'promoting_citizen_profile'
     let response
     try {
       response = await fetch(`${config.url}/rest/v1/rpc/promote_citizen_to_main_system_administrator`, {
@@ -254,14 +378,15 @@ router.post('/admin-promote', adminPromotionLimit, async (req, res) => {
         body: JSON.stringify({ p_user_id: user.id, p_claim_id: claimId }),
         signal: AbortSignal.timeout(10000),
       })
-    } catch (error) {
-      console.error('Main System Administrator promotion outcome is unconfirmed:', {
-        stage: 'promoting_citizen_profile',
-        exceptionName: error?.name || 'Error',
-        reason: 'DATABASE_CONNECTION_FAILED',
-        status: null,
-        claimPreserved: true,
-      })
+    } catch (cause) {
+      const error = new Error('Administrator promotion outcome is unconfirmed.', { cause })
+      logAdminSupabaseFailure(
+        'Main System Administrator promotion outcome is unconfirmed:',
+        stage,
+        config,
+        adminSupabasePaths.promoteCitizen,
+        error,
+      )
       return res.status(503).json({
         message: 'Promotion outcome could not be confirmed. The existing account was not changed or deleted; ask the operator to verify setup before retrying.',
       })
@@ -272,12 +397,19 @@ router.post('/admin-promote', adminPromotionLimit, async (req, res) => {
       if (response.status < 500) await releaseAdministratorSetupClaim(config, claimId)
       const conflict = response.status === 409 || ['23505', '23514'].includes(errorCode)
       const ineligible = errorCode === '22023'
-      console.warn('Main System Administrator promotion was rejected:', {
-        stage: 'promoting_citizen_profile',
-        status: response.status,
-        reason: conflict ? 'PROMOTION_CONFLICT' : 'PROMOTION_REJECTED',
-        databaseCode: /^[A-Z0-9]{5}$/i.test(errorCode) ? errorCode : null,
-      })
+      const promotionError = new Error('Administrator promotion was rejected.')
+      logAdminSupabaseFailure(
+        'Main System Administrator promotion was rejected:',
+        stage,
+        config,
+        adminSupabasePaths.promoteCitizen,
+        promotionError,
+        {
+          status: response.status,
+          code: errorCode,
+          message: errorPayload.message || errorPayload.msg,
+        },
+      )
       return res.status(conflict ? 409 : ineligible ? 403 : response.status < 500 ? 400 : 503).json({
         message: conflict
           ? 'Another Main System Administrator already exists or this account is not eligible for promotion.'
@@ -300,14 +432,26 @@ router.post('/admin-promote', adminPromotionLimit, async (req, res) => {
       message: 'Your existing account is now the Main System Administrator. Sign in at Administrator Login.',
     })
   } catch (error) {
-    console.error('Main System Administrator promotion failed:', {
-      reason: error.code || 'PROMOTION_VERIFICATION_FAILED',
-      status: error.status || null,
-    })
-    return res.status(error.status === 503 ? 503 : 500).json({
-      message: error.status === 503
-        ? 'The backend could not verify your account or contact Supabase. Retry after the service is available.'
-        : 'Unable to verify the existing account for promotion.',
+    logAdminSupabaseFailure(
+      'Main System Administrator promotion failed:',
+      stage,
+      config,
+      stage === 'verifying_auth_user'
+        ? adminSupabasePaths.authUser
+        : stage === 'checking_setup_state'
+          ? adminSupabasePaths.setupState
+          : stage === 'claiming_setup'
+            ? adminSupabasePaths.claimSetup
+            : adminSupabasePaths.promoteCitizen,
+      error,
+      { status: error.upstreamStatus || null },
+    )
+    return res.status(error.status === 429 ? 429 : error.status === 503 ? 503 : 500).json({
+      message: error.status === 429
+        ? 'Supabase is rate limiting account verification. Wait before retrying.'
+        : error.status === 503
+          ? 'The backend could not verify your account or contact Supabase. Retry after the service is available.'
+          : 'Unable to verify the existing account for promotion.',
     })
   }
 })
@@ -315,9 +459,11 @@ router.post('/admin-promote', adminPromotionLimit, async (req, res) => {
 router.post('/admin-login', adminLoginLimit, async (req, res) => {
   const config = staffAuthConfig()
   if (!config) return res.status(503).json({ message: 'Administrator login is not configured.' })
+  let stage = 'verifying_auth_user'
   try {
     const user = await authenticatedUser(config, req)
     if (!user) return res.status(401).json(genericFailure)
+    stage = 'checking_admin_profile'
     const profile = await mainAdministratorProfile(config, user.id)
     if (!user.email || !user.email_confirmed_at ||
         !profile ||
@@ -338,14 +484,22 @@ router.post('/admin-login', adminLoginLimit, async (req, res) => {
       },
     })
   } catch (error) {
-    console.error('Main System Administrator login verification failed:', {
-      reason: error.status === 503 ? 'AUTH_OR_DATABASE_UNAVAILABLE' : 'ADMIN_AUTHORIZATION_FAILED',
-      status: error.status || null,
-    })
-    return res.status(error.status === 503 ? 503 : 500).json({
-      message: error.status === 503
-        ? 'The administrator authorization service is temporarily unavailable.'
-        : 'Unable to verify administrator access.',
+    logAdminSupabaseFailure(
+      'Main System Administrator login verification failed:',
+      stage,
+      config,
+      stage === 'verifying_auth_user'
+        ? adminSupabasePaths.authUser
+        : adminSupabasePaths.adminProfile,
+      error,
+      { status: error.upstreamStatus || null },
+    )
+    return res.status(error.status === 429 ? 429 : error.status === 503 ? 503 : 500).json({
+      message: error.status === 429
+        ? 'Supabase is rate limiting administrator verification. Wait before retrying.'
+        : error.status === 503
+          ? 'The administrator authorization service is temporarily unavailable.'
+          : 'Unable to verify administrator access.',
     })
   }
 })

@@ -49,7 +49,7 @@ Administrator endpoints verify both the Auth token and the database Main System 
 11. Deploy the Express API, then deploy the frontend. The frontend build remains in `client/`; the server is a separate service.
 12. Test existing-citizen promotion, email/password administrator login, administrator-managed staff password changes, role/ward/department isolation, complaint actions, and private photo access in a non-production project before using the endpoints against production.
 
-Promotion failures are logged server-side using the stage and safe status/code only. User-submitted identifiers, passwords, setup keys, request bodies, authorization headers, and Auth responses must not be logged.
+Administrator Auth and promotion failures are logged server-side with the operation stage, failure category, HTTP status when received, safe Supabase error code/message, request/response indicators, and Supabase hostname/path. Identifiers, passwords, setup keys, request bodies, authorization headers, and Auth responses must not be logged.
 
 The promotion flow requires both a valid signed-in, email-confirmed citizen session and the private server-side setup key. The key is never part of a Vite setting and is never logged. Rotate it privately if it has ever appeared in a repository or shared conversation.
 

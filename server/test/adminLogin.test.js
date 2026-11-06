@@ -75,7 +75,9 @@ test('email-session verification grants access only to Main System Administrator
     throw new Error(`Unexpected mocked Supabase path: ${url.pathname}`)
   }
 
-  const server = createServer(createApp())
+  const app = createApp()
+  app.set('trust proxy', true)
+  const server = createServer(app)
   try {
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
     const origin = `http://127.0.0.1:${server.address().port}`
@@ -121,6 +123,62 @@ test('email-session verification grants access only to Main System Administrator
   } finally {
     await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
     globalThis.fetch = originalFetch
+    for (const [key, value] of Object.entries(originalEnv)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  }
+})
+
+test('administrator identity network failures are logged safely and return an unavailable response', async () => {
+  const originalFetch = globalThis.fetch
+  const originalError = console.error
+  const originalEnv = Object.fromEntries([
+    'SUPABASE_URL',
+    'SUPABASE_PUBLISHABLE_KEY',
+    'SUPABASE_SECRET_KEY',
+    'NODE_ENV',
+  ].map(key => [key, process.env[key]]))
+  const logEntries = []
+
+  process.env.SUPABASE_URL = 'https://project-ref.supabase.co'
+  process.env.SUPABASE_PUBLISHABLE_KEY = 'test-publishable-key'
+  process.env.SUPABASE_SECRET_KEY = 'test-server-secret'
+  process.env.NODE_ENV = 'test'
+  console.error = (...args) => logEntries.push(args)
+  globalThis.fetch = async () => {
+    const error = new Error('DNS lookup failed for private@example.test +919876543210 setup_key=do-not-log-this')
+    error.code = 'ENOTFOUND'
+    throw error
+  }
+
+  const app = createApp()
+  app.set('trust proxy', true)
+  const server = createServer(app)
+  try {
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+    const response = await originalFetch(`http://127.0.0.1:${server.address().port}/api/staff-auth/admin-login`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer test-access-token',
+        'x-forwarded-for': '192.0.2.240',
+      },
+    })
+    assert.equal(response.status, 503)
+    assert.match((await response.json()).message, /temporarily unavailable/i)
+    const diagnostic = logEntries.find(([label]) => label === 'Administrator identity verification failed:')?.[1]
+    assert.equal(diagnostic.failureType, 'dns')
+    assert.equal(diagnostic.requestInitiated, true)
+    assert.equal(diagnostic.httpResponseReceived, false)
+    assert.equal(diagnostic.status, null)
+    assert.equal(diagnostic.host, 'project-ref.supabase.co')
+    assert.equal(diagnostic.path, '/auth/v1/user')
+    const serializedLogs = JSON.stringify(logEntries)
+    assert.doesNotMatch(serializedLogs, /private@example\.test|9876543210|do-not-log-this|test-access-token/)
+  } finally {
+    await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
+    globalThis.fetch = originalFetch
+    console.error = originalError
     for (const [key, value] of Object.entries(originalEnv)) {
       if (value === undefined) delete process.env[key]
       else process.env[key] = value
