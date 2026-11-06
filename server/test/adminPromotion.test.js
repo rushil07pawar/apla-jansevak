@@ -147,6 +147,50 @@ test('only an authenticated confirmed citizen can atomically promote its existin
   }
 })
 
+test('missing setup-state rows are rejected as a migration gap before promotion is allowed', async () => {
+  const originalFetch = globalThis.fetch
+  const originalEnv = Object.fromEntries(['SUPABASE_URL', 'SUPABASE_PUBLISHABLE_KEY', 'SUPABASE_SECRET_KEY', 'ADMIN_SETUP_KEY', 'NODE_ENV']
+    .map(key => [key, process.env[key]]))
+
+  process.env.SUPABASE_URL = 'https://project-ref.supabase.co'
+  process.env.SUPABASE_PUBLISHABLE_KEY = 'test-publishable-key'
+  process.env.SUPABASE_SECRET_KEY = 'test-server-secret'
+  process.env.ADMIN_SETUP_KEY = 'test-setup-key-with-at-least-32-characters'
+  process.env.NODE_ENV = 'test'
+
+  globalThis.fetch = async (input, options = {}) => {
+    const url = new URL(input)
+    if (url.pathname === '/auth/v1/user') {
+      return Response.json({ id: 'citizen-user-3', email: 'missing-state@example.test', email_confirmed_at: 'confirmed' })
+    }
+    if (url.pathname === '/rest/v1/main_admin_setup_state') {
+      return Response.json([])
+    }
+    throw new Error(`Unexpected mocked Supabase path: ${url.pathname}`)
+  }
+
+  const app = createApp()
+  app.set('trust proxy', true)
+  const server = createServer(app)
+  try {
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+    const response = await originalFetch(`http://127.0.0.1:${server.address().port}/api/staff-auth/admin-setup/status`)
+    assert.equal(response.status, 503)
+    assert.deepEqual(await response.json(), {
+      available: false,
+      reason: 'DATABASE_MIGRATION_REQUIRED',
+      message: 'Backend could not verify administrator setup. Check migrations and backend logs.',
+    })
+  } finally {
+    await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
+    globalThis.fetch = originalFetch
+    for (const [key, value] of Object.entries(originalEnv)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  }
+})
+
 test('two simultaneous promotion requests cannot both claim setup', async () => {
   const originalFetch = globalThis.fetch
   const envKeys = ['SUPABASE_URL', 'SUPABASE_PUBLISHABLE_KEY', 'SUPABASE_SECRET_KEY', 'ADMIN_SETUP_KEY', 'NODE_ENV']

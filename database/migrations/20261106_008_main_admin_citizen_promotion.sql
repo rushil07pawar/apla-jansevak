@@ -10,6 +10,24 @@ alter table public.staff_profiles
   add constraint staff_profiles_contact_required_for_non_admin
     check (is_main_system_admin or official_contact_number is not null);
 
+insert into public.main_admin_setup_state (
+  singleton,
+  setup_completed,
+  completed_at,
+  initial_admin_user_id,
+  setup_claim_id,
+  setup_claimed_at
+)
+values (
+  true,
+  false,
+  null,
+  null,
+  null,
+  null
+)
+on conflict (singleton) do nothing;
+
 update public.main_admin_setup_state
 set setup_completed = true,
     completed_at = coalesce(completed_at, now()),

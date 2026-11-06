@@ -143,15 +143,30 @@ begin
     raise exception using errcode = '23505', message = 'Main System Administrator setup is closed or the claim is invalid';
   end if;
 
-  select u.phone into v_phone
-  from auth.users u
-  where u.id = p_user_id
-    and u.phone_confirmed_at is not null
-    and u.raw_app_meta_data ->> 'account_type' = 'staff'
-  for key share;
+  if p_full_name is null or btrim(p_full_name) = '' then
+    select coalesce(p.full_name, split_part(u.email, '@', 1))
+      into v_full_name
+    from auth.users u
+    left join public.profiles p on p.id = u.id
+    where u.id = p_user_id
+      and u.email is not null
+      and u.email_confirmed_at is not null;
+  else
+    v_full_name := btrim(p_full_name);
+  end if;
 
-  if not found or v_phone is null or v_phone !~ '^[+]91[6-9][0-9]{9}$' then
-    raise exception using errcode = '22023', message = 'Auth user must have trusted staff metadata and a confirmed Indian phone';
+  if v_full_name is null or char_length(v_full_name) not between 2 and 100 then
+    raise exception using errcode = '22023', message = 'Provide a valid full name or use the existing citizen profile data';
+  end if;
+  if not exists (
+    select 1
+    from auth.users u
+    join public.profiles p on p.id = u.id
+    where u.id = p_user_id
+      and u.email is not null
+      and u.email_confirmed_at is not null
+  ) then
+    raise exception using errcode = '22023', message = 'A confirmed email Auth account with an existing citizen profile is required';
   end if;
   if exists (
     select 1 from public.staff_profiles
@@ -162,10 +177,8 @@ begin
   if exists (
     select 1 from public.staff_profiles
     where user_id = p_user_id
-       or mobile_e164 = v_phone
-       or official_contact_number = v_phone
   ) then
-    raise exception using errcode = '23505', message = 'This Auth user or phone already has a staff profile';
+    raise exception using errcode = '23505', message = 'This account already has a staff profile';
   end if;
 
   insert into public.staff_profiles (
@@ -184,14 +197,14 @@ begin
   values (
     p_user_id,
     null,
-    v_phone,
-    v_phone,
+    null,
+    null,
     'administrator',
     true,
     true,
     false,
     true,
-    btrim(p_full_name),
+    v_full_name,
     'Developer / Main System Administrator'
   );
 
