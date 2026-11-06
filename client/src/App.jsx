@@ -3,7 +3,7 @@ import { BrowserRouter, Link, Navigate, Route, Routes, useLocation, useNavigate,
 import { ArrowRight, CheckCircle2, Eye, EyeOff, ImagePlus, LogIn, MapPin, RefreshCw, Search, ShieldCheck, UserPlus } from 'lucide-react'
 import { getCitizenIdentity, registerCitizen, signInCitizen, signInStaff } from './lib/auth'
 import { complaintCategories, getComplaint, submitComplaint } from './lib/complaints'
-import { createStaffAccount, createStaffDesignation, getAdminAuditLogs, getAdminDepartments, getAdminDesignations, getAdminStaff, getAdminWards, getStaffDashboard, setAdminStaffPassword, setStaffAccountActive, setStaffDesignationActive, takeComplaintAction, updateStaffAccount, updateStaffDesignation } from './lib/staffManagement'
+import { createAdminDepartment, createStaffAccount, createStaffDesignation, deleteAdminSystemSetting, getAdminAuditLogs, getAdminDepartments, getAdminDesignations, getAdminStaff, getAdminSystemSettings, getAdminWards, getStaffDashboard, saveAdminSystemSetting, setAdminStaffPassword, setStaffAccountActive, setStaffDesignationActive, takeComplaintAction, updateAdminDepartment, updateStaffAccount, updateStaffDesignation } from './lib/staffManagement'
 import { isSupabaseConfigured, requireSupabase } from './lib/supabaseClient'
 import './App.css'
 
@@ -649,7 +649,7 @@ function StaffDashboard() {
           <div><dt>Role</dt><dd>{state.staff.is_main_system_admin ? 'Main System Administrator' : STAFF_ROLE_LABELS[state.staff.role] || state.staff.role}</dd></div>
           <div><dt>Designation</dt><dd>{state.staff.designation_mr || state.staff.designation_en || 'Not recorded'}</dd></div>
           <div><dt>Department</dt><dd>{state.departments.find(department => department.id === state.staff.department_id)?.name || 'Cross-department administrator'}</dd></div>
-          <div><dt>Authorized wards</dt><dd>{state.staff.is_main_system_admin ? 'All active wards' : state.staff.authorized_wards?.length ? state.staff.authorized_wards.map(ward => `Ward ${String(ward.ward_number).padStart(2, '0')}`).join(', ') : 'None assigned'}</dd></div>
+          <div><dt>Authorized wards</dt><dd>{state.staff.is_main_system_admin ? 'All wards' : state.staff.authorized_wards?.length ? state.staff.authorized_wards.map(ward => `Ward ${String(ward.ward_number).padStart(2, '0')}`).join(', ') : 'None assigned'}</dd></div>
           <div><dt>Reporting officer</dt><dd>{state.staff.reportsTo?.full_name_mr || state.staff.reportsTo?.full_name_en || state.staff.reportsTo?.staff_id || 'Not configured'}</dd></div>
         </dl>
         <div className="work-stat-grid">
@@ -742,6 +742,14 @@ function emptyDesignationProfile() {
   return { department_id: '', name_mr: '', name_en: '' }
 }
 
+function emptyDepartmentProfile() {
+  return { code: '', name: '', name_mr: '' }
+}
+
+function emptySystemSetting() {
+  return { key: '', description: '', value: '{\n  \n}' }
+}
+
 const STAFF_ROLE_LABELS = {
   administrator: 'Administrator (not Main System Administrator)',
   department_head: 'Department Head',
@@ -753,11 +761,15 @@ const STAFF_ROLE_LABELS = {
 }
 
 function StaffManagement() {
-  const [state, setState] = useState({ status: 'loading', departments: [], designations: [], wards: [], staff: [], logs: [] })
+  const [state, setState] = useState({ status: 'loading', departments: [], designations: [], wards: [], staff: [], logs: [], settings: [] })
   const [profile, setProfile] = useState(emptyStaffProfile)
   const [designationProfile, setDesignationProfile] = useState(emptyDesignationProfile)
+  const [departmentProfile, setDepartmentProfile] = useState(emptyDepartmentProfile)
+  const [systemSetting, setSystemSetting] = useState(emptySystemSetting)
   const [editingId, setEditingId] = useState('')
   const [editingDesignationId, setEditingDesignationId] = useState('')
+  const [editingDepartmentId, setEditingDepartmentId] = useState('')
+  const [editingSystemSettingKey, setEditingSystemSettingKey] = useState('')
   const [initialPassword, setInitialPassword] = useState('')
   const [confirmInitialPassword, setConfirmInitialPassword] = useState('')
   const [passwordTarget, setPasswordTarget] = useState(null)
@@ -770,10 +782,10 @@ function StaffManagement() {
   const [busy, setBusy] = useState(false)
 
   async function fetchDirectory() {
-    const [departments, designations, wards, staff, logs] = await Promise.all([
-      getAdminDepartments(), getAdminDesignations(), getAdminWards(), getAdminStaff(), getAdminAuditLogs(),
+    const [departments, designations, wards, staff, logs, settings] = await Promise.all([
+      getAdminDepartments(), getAdminDesignations(), getAdminWards(), getAdminStaff(), getAdminAuditLogs(), getAdminSystemSettings(),
     ])
-    return { status: 'loaded', departments, designations, wards, staff, logs }
+    return { status: 'loaded', departments, designations, wards, staff, logs, settings }
   }
 
   async function load() {
@@ -820,6 +832,96 @@ function StaffManagement() {
       name_mr: designation.name_mr || '',
       name_en: designation.name_en || '',
     })
+  }
+
+  function editDepartment(department) {
+    setEditingDepartmentId(department.id)
+    setDepartmentProfile({
+      code: department.code,
+      name: department.name,
+      name_mr: department.name_mr || '',
+    })
+  }
+
+  function cancelDepartmentEdit() {
+    setEditingDepartmentId('')
+    setDepartmentProfile(emptyDepartmentProfile())
+  }
+
+  async function submitDepartment(event) {
+    event.preventDefault()
+    if (!window.confirm(`${editingDepartmentId ? 'Save changes to' : 'Add'} this department?`)) return
+    setBusy(true)
+    setMessage('')
+    try {
+      const result = editingDepartmentId
+        ? await updateAdminDepartment(editingDepartmentId, departmentProfile)
+        : await createAdminDepartment(departmentProfile)
+      setMessage(result.message)
+      cancelDepartmentEdit()
+      await load()
+    } catch (error) {
+      setMessage(error.message || 'Unable to save this department.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  function editSystemSetting(setting) {
+    setEditingSystemSettingKey(setting.key)
+    setSystemSetting({
+      key: setting.key,
+      description: setting.description || '',
+      value: JSON.stringify(setting.value, null, 2),
+    })
+  }
+
+  function cancelSystemSettingEdit() {
+    setEditingSystemSettingKey('')
+    setSystemSetting(emptySystemSetting())
+  }
+
+  async function submitSystemSetting(event) {
+    event.preventDefault()
+    let value
+    try {
+      value = JSON.parse(systemSetting.value)
+    } catch {
+      setMessage('Enter a valid JSON value for this setting.')
+      return
+    }
+    if (!window.confirm(`${editingSystemSettingKey ? 'Save changes to' : 'Add'} this system setting?`)) return
+    setBusy(true)
+    setMessage('')
+    try {
+      const result = await saveAdminSystemSetting(systemSetting.key, {
+        value,
+        description: systemSetting.description,
+      })
+      setMessage(result.message)
+      cancelSystemSettingEdit()
+      await load()
+    } catch (error) {
+      setMessage(error.message || 'Unable to save this system setting.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function removeSystemSetting(setting) {
+    if (!window.confirm(`Delete the "${setting.key}" system setting? This action is recorded in the audit log.`)) return
+    setBusy(true)
+    setMessage('')
+    try {
+      const result = await deleteAdminSystemSetting(setting.key)
+      setMessage(result.message)
+      if (editingSystemSettingKey === setting.key) cancelSystemSettingEdit()
+      await load()
+    } catch (error) {
+      setMessage(error.message || 'Unable to delete this system setting.')
+    } finally {
+      setBusy(false)
+    }
   }
 
   function cancelDesignationEdit() {
@@ -1002,9 +1104,20 @@ function StaffManagement() {
     <Layout>
       <section className="management-page">
         <header className="management-heading"><div><p className="eyebrow">Restricted administrator access</p><h1>Department and Staff Management</h1><p>Only the Main System Administrator can manage accounts, reporting relationships, wards, and permissions.</p></div><button className="button button-secondary" type="button" onClick={() => window.location.assign('/staff/dashboard')}>Staff dashboard</button></header>
-        <div className="management-tabs" aria-label="Staff management sections"><button type="button" aria-pressed={tab === 'directory'} onClick={() => setTab('directory')}>Department directory</button><button type="button" aria-pressed={tab === 'audit'} onClick={() => setTab('audit')}>Audit log</button></div>
+        <div className="management-tabs" aria-label="Staff management sections"><button type="button" aria-pressed={tab === 'directory'} onClick={() => setTab('directory')}>Departments and staff</button><button type="button" aria-pressed={tab === 'settings'} onClick={() => setTab('settings')}>System settings</button><button type="button" aria-pressed={tab === 'audit'} onClick={() => setTab('audit')}>Audit log</button></div>
         {message && <p className="notice" role="status">{message}</p>}
         {tab === 'directory' ? <>
+          <section className="form-card staff-editor">
+            <h2>Departments</h2>
+            <p className="field-hint">Add or update department records. Departments with staff or complaint data cannot be deleted.</p>
+            <form className="management-form-grid" onSubmit={submitDepartment}>
+              <label className="field"><span>Department code</span><input value={departmentProfile.code} onChange={event => setDepartmentProfile({ ...departmentProfile, code: event.target.value.toUpperCase() })} pattern="[A-Z0-9_]{2,32}" maxLength={32} required /></label>
+              <label className="field"><span>Department name (English)</span><input value={departmentProfile.name} onChange={event => setDepartmentProfile({ ...departmentProfile, name: event.target.value })} minLength={2} maxLength={120} required /></label>
+              <label className="field"><span>Department name (Marathi)</span><input value={departmentProfile.name_mr} onChange={event => setDepartmentProfile({ ...departmentProfile, name_mr: event.target.value })} maxLength={180} /></label>
+              <div className="editor-actions"><button className="button button-primary" type="submit" disabled={busy || departmentProfile.code.length < 2 || departmentProfile.name.trim().length < 2}>{busy ? 'Saving…' : editingDepartmentId ? 'Save department' : 'Add department'}</button>{editingDepartmentId && <button className="button button-secondary" type="button" onClick={cancelDepartmentEdit}>Cancel</button>}</div>
+            </form>
+            <div className="designation-list">{state.departments.map(department => <article className="directory-person" key={department.id}><div><strong>{department.name_mr || department.name}</strong>{department.name_mr && <span>{department.name}</span>}<small>{department.code}</small></div><div className="directory-actions"><button type="button" className="text-button" disabled={busy} onClick={() => editDepartment(department)}>Edit</button></div></article>)}</div>
+          </section>
           <section className="form-card staff-editor">
             <h2>Department designations</h2>
             <p className="field-hint">Maintain the designation choices available when creating staff profiles. Add only titles verified against official municipal records.</p>
@@ -1061,7 +1174,19 @@ function StaffManagement() {
           <div className="department-directory">{state.departments.filter(department => !departmentFilter || department.id === departmentFilter).map(department => {
             const rows = visibleStaff.filter(row => row.department_id === department.id)
             return <section className="department-card" key={department.id}><h2>{department.name_mr}</h2><p>{department.name}</p>{rows.length ? renderHierarchy(rows) : <p className="field-hint">No directory entries match this filter. Add staff only from a verified official source.</p>}</section>
-          })}</div>
+          })}{!departmentFilter && state.staff.filter(row => row.is_main_system_admin).map(row => <section className="department-card" key={row.user_id}><h2>Global Main System Administrator</h2><article className="directory-person"><div><strong>{row.full_name_mr || row.full_name_en || 'Name not recorded'}</strong><small>{row.designation_mr || row.designation_en || 'Developer / Main System Administrator'}</small><small>No department · All wards</small><small>Login mobile: {row.mobile_e164}</small></div><span className={row.active && row.approved ? 'staff-status status-active' : 'staff-status'}>{row.active && row.approved ? 'Active' : 'Inactive'}</span></article></section>)}</div>
+        </> : tab === 'settings' ? <>
+          <form className="form-card staff-editor" onSubmit={submitSystemSetting}>
+            <h2>{editingSystemSettingKey ? 'Edit system setting' : 'Add system setting'}</h2>
+            <p className="field-hint">Settings are JSON values visible to administrators. Never store passwords, API keys, or other secrets here.</p>
+            <div className="management-form-grid">
+              <label className="field"><span>Setting key</span><input value={systemSetting.key} onChange={event => setSystemSetting({ ...systemSetting, key: event.target.value })} pattern="[a-z][a-z0-9_.-]{0,99}" maxLength={100} disabled={Boolean(editingSystemSettingKey)} required /></label>
+              <label className="field"><span>Description</span><input value={systemSetting.description} onChange={event => setSystemSetting({ ...systemSetting, description: event.target.value })} maxLength={500} /></label>
+              <label className="field"><span>JSON value</span><textarea value={systemSetting.value} onChange={event => setSystemSetting({ ...systemSetting, value: event.target.value })} maxLength={65536} required spellCheck="false" /></label>
+            </div>
+            <div className="editor-actions"><button className="button button-primary" type="submit" disabled={busy || !systemSetting.key || !systemSetting.value.trim()}>{busy ? 'Saving…' : editingSystemSettingKey ? 'Save setting' : 'Add setting'}</button>{editingSystemSettingKey && <button className="button button-secondary" type="button" onClick={cancelSystemSettingEdit}>Cancel</button>}</div>
+          </form>
+          <section className="audit-list"><h2>Configured settings</h2>{state.settings.length ? state.settings.map(setting => <article key={setting.key}><strong>{setting.key}</strong><span>{setting.description || 'No description'}</span><time>Updated {new Date(setting.updated_at).toLocaleString()}</time><pre>{JSON.stringify(setting.value, null, 2)}</pre><div className="directory-actions"><button type="button" className="text-button" disabled={busy} onClick={() => editSystemSetting(setting)}>Edit</button><button type="button" className="text-button" disabled={busy} onClick={() => removeSystemSetting(setting)}>Delete</button></div></article>) : <p>No system settings configured.</p>}</section>
         </> : <section className="audit-list"><h2>Recent administrative changes</h2>{state.logs.length ? state.logs.map(log => <article key={log.id}><strong>{log.action}</strong><span>{log.target_type} {log.target_id || ''}</span><time>{new Date(log.created_at).toLocaleString()}</time><pre>{JSON.stringify(log.details, null, 2)}</pre></article>) : <p>No audit events recorded.</p>}</section>}
       </section>
     </Layout>

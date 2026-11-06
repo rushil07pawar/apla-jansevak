@@ -68,6 +68,74 @@ export async function listDepartments(config) {
   return request(config, `/rest/v1/departments?${query}`)
 }
 
+export async function manageDepartment(config, actorId, action, input = {}, departmentId = null) {
+  const code = typeof input.code === 'string' ? input.code.trim().toUpperCase() : ''
+  const name = typeof input.name === 'string' ? input.name.trim() : ''
+  const nameMr = typeof input.name_mr === 'string' ? input.name_mr.trim() : ''
+  if (!['create', 'update'].includes(action) ||
+      (departmentId !== null && !UUID_PATTERN.test(departmentId)) ||
+      (action === 'update' && !departmentId) ||
+      !/^[A-Z0-9_]{2,32}$/.test(code) ||
+      name.length < 2 || name.length > 120 || nameMr.length > 180) {
+    const error = new Error('Provide a valid department code, English name, and optional Marathi name.')
+    error.status = 400
+    throw error
+  }
+  return request(config, '/rest/v1/rpc/manage_department', {
+    method: 'POST',
+    body: JSON.stringify({
+      p_actor: actorId,
+      p_action: action,
+      p_department_id: departmentId,
+      p_code: code,
+      p_name: name,
+      p_name_mr: nameMr || null,
+    }),
+  })
+}
+
+export async function listSystemSettings(config) {
+  const query = new URLSearchParams({
+    select: 'key,value,description,updated_at,updated_by',
+    order: 'key.asc',
+  })
+  return request(config, `/rest/v1/system_settings?${query}`)
+}
+
+export async function manageSystemSetting(config, actorId, action, key, value, description) {
+  if (typeof key !== 'string' || !/^[a-z][a-z0-9_.-]{0,99}$/.test(key) ||
+      !['upsert', 'delete'].includes(action)) {
+    const error = new Error('Provide a valid system setting key and action.')
+    error.status = 400
+    throw error
+  }
+  if (action === 'upsert') {
+    let serialized
+    try {
+      serialized = JSON.stringify(value)
+    } catch {
+      serialized = undefined
+    }
+    if (serialized === undefined || serialized.length > 65536 ||
+        (description !== null && description !== undefined &&
+          (typeof description !== 'string' || description.trim().length > 500))) {
+      const error = new Error('Provide a JSON value up to 64 KiB and a description up to 500 characters.')
+      error.status = 400
+      throw error
+    }
+  }
+  return request(config, '/rest/v1/rpc/manage_system_setting', {
+    method: 'POST',
+    body: JSON.stringify({
+      p_actor: actorId,
+      p_action: action,
+      p_key: key,
+      p_value: action === 'upsert' ? value : null,
+      p_description: action === 'upsert' ? (description?.trim() || null) : null,
+    }),
+  })
+}
+
 export async function listWards(config) {
   const query = new URLSearchParams({
     select: 'id,ward_number,ward_name,is_active',
@@ -441,21 +509,31 @@ export async function authorizeStaffSession(req) {
     error.status = 403
     throw error
   }
+  if (staff.is_main_system_admin && staff.role !== 'administrator') {
+    const error = new Error('The Main System Administrator profile is invalid. Contact the system owner.')
+    error.status = 403
+    throw error
+  }
   return { config, userId: user.id, staff }
 }
 
 export async function getStaffDashboard(config, userId, staff) {
+  const isMainAdministrator = staff.is_main_system_admin === true &&
+    staff.role === 'administrator' &&
+    staff.active &&
+    staff.approved &&
+    !staff.force_password_change
   let scopes = []
   let permissions = new Set()
   let staffOptions = []
   let departments = []
   let wards = []
-  if (staff.is_main_system_admin) {
+  if (isMainAdministrator) {
     const [allDepartments, allWards] = await Promise.all([listDepartments(config), listWards(config)])
     departments = allDepartments
     wards = allWards
     scopes = departments.flatMap(department =>
-      wards.filter(ward => ward.is_active).map(ward => ({
+      wards.map(ward => ({
         department_id: department.id,
         ward_id: ward.id,
       })),
@@ -539,19 +617,19 @@ export async function getStaffDashboard(config, userId, staff) {
   const dashboardStaff = {
     ...staff,
     user_id: userId,
-    is_main_system_admin: staff.is_main_system_admin,
+    is_main_system_admin: isMainAdministrator,
     authorized_wards: wards,
     ward_permissions: [...permissions],
     canUpdate: permissions.has('complaints.update'),
     canAssign: permissions.has('complaints.assign'),
     canEscalate: permissions.has('complaints.escalate'),
-    canRoute: Boolean(staff.is_main_system_admin),
+    canRoute: isMainAdministrator,
     managerId,
     reportsTo,
   }
   const assignedOnlyRoles = ['staff', 'assigned_staff', 'junior_section_officer']
   let assignedComplaintIds = null
-  if (!staff.is_main_system_admin && assignedOnlyRoles.includes(staff.role)) {
+  if (!isMainAdministrator && assignedOnlyRoles.includes(staff.role)) {
     const assignedRows = await request(config, `/rest/v1/complaint_assignments?${new URLSearchParams({
       select: 'complaint_id',
       staff_user_id: `eq.${userId}`,
@@ -562,9 +640,11 @@ export async function getStaffDashboard(config, userId, staff) {
       return { staff: dashboardStaff, complaints: [], staffOptions, departments, wards, stats: emptyStats() }
     }
   }
-  if (!scopes.length) return { staff: dashboardStaff, complaints: [], staffOptions, departments, wards, stats: emptyStats() }
+  if (!scopes.length && !isMainAdministrator) {
+    return { staff: dashboardStaff, complaints: [], staffOptions, departments, wards, stats: emptyStats() }
+  }
 
-  const filters = staff.is_main_system_admin
+  const filters = isMainAdministrator
     ? [`department_id.in.(${departments.map(department => department.id).join(',')})`, 'department_id.is.null']
     : scopes.map(scope => `and(department_id.eq.${scope.department_id},ward_id.eq.${scope.ward_id})`)
   const filter = `(${filters.join(',')})`
@@ -575,13 +655,25 @@ export async function getStaffDashboard(config, userId, staff) {
     limit: '500',
   })
   if (assignedComplaintIds) complaintQuery.set('id', `in.(${assignedComplaintIds.join(',')})`)
-  const complaints = await request(config, `/rest/v1/complaints?${complaintQuery}`)
+  const complaintPath = `/rest/v1/complaints?${complaintQuery}`
+  const complaints = isMainAdministrator
+    ? await listAllPages(config, complaintPath)
+    : await request(config, complaintPath)
   if (!complaints.length) return { staff: dashboardStaff, complaints, staffOptions, departments, wards, stats: emptyStats() }
-  const ids = `in.(${complaints.map(complaint => complaint.id).join(',')})`
-  const [assignments, history] = await Promise.all([
-    request(config, `/rest/v1/complaint_assignments?${new URLSearchParams({ select: 'complaint_id,staff_user_id,assigned_by,assigned_at,unassigned_at', complaint_id: ids, order: 'assigned_at.desc' })}`),
-    request(config, `/rest/v1/complaint_status_history?${new URLSearchParams({ select: 'complaint_id,previous_status,new_status,note,changed_by,event_type,previous_assignee_id,new_assignee_id,details,created_at', complaint_id: ids, order: 'created_at.desc' })}`),
-  ])
+  const complaintBatches = []
+  for (let index = 0; index < complaints.length; index += 200) {
+    complaintBatches.push(complaints.slice(index, index + 200))
+  }
+  const relatedRows = await Promise.all(complaintBatches.map(async batch => {
+    const ids = `in.(${batch.map(complaint => complaint.id).join(',')})`
+    const [assignments, history] = await Promise.all([
+      request(config, `/rest/v1/complaint_assignments?${new URLSearchParams({ select: 'complaint_id,staff_user_id,assigned_by,assigned_at,unassigned_at', complaint_id: ids, order: 'assigned_at.desc' })}`),
+      request(config, `/rest/v1/complaint_status_history?${new URLSearchParams({ select: 'complaint_id,previous_status,new_status,note,changed_by,event_type,previous_assignee_id,new_assignee_id,details,created_at', complaint_id: ids, order: 'created_at.desc' })}`),
+    ])
+    return { assignments, history }
+  }))
+  const assignments = relatedRows.flatMap(rows => rows.assignments)
+  const history = relatedRows.flatMap(rows => rows.history)
   const relatedStaffIds = [...new Set([
     ...assignments.map(row => row.staff_user_id),
     ...assignments.map(row => row.assigned_by),
@@ -625,6 +717,20 @@ export async function getStaffDashboard(config, userId, staff) {
     return counts
   }, emptyStats())
   return { staff: dashboardStaff, complaints: enriched, staffOptions, departments, wards, stats }
+}
+
+async function listAllPages(config, path, pageSize = 500) {
+  const rows = []
+  for (let offset = 0; ; offset += pageSize) {
+    const page = await request(config, path, {
+      headers: { range: `${offset}-${offset + pageSize - 1}` },
+    })
+    if (!Array.isArray(page)) {
+      throw new Error('Supabase returned an invalid complaint page.')
+    }
+    rows.push(...page)
+    if (page.length < pageSize) return rows
+  }
 }
 
 function emptyStats() {

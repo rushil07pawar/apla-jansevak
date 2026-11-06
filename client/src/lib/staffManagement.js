@@ -37,6 +37,20 @@ export async function getAdminDepartments() {
   return request('/api/admin/departments')
 }
 
+export async function createAdminDepartment(department) {
+  return request('/api/admin/departments', {
+    method: 'POST',
+    body: JSON.stringify(department),
+  })
+}
+
+export async function updateAdminDepartment(departmentId, department) {
+  return request(`/api/admin/departments/${encodeURIComponent(departmentId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(department),
+  })
+}
+
 export async function getAdminWards() {
   return request('/api/admin/wards')
 }
@@ -72,6 +86,23 @@ export async function getAdminStaff() {
 
 export async function getAdminAuditLogs() {
   return request('/api/admin/audit-logs')
+}
+
+export async function getAdminSystemSettings() {
+  return request('/api/admin/system-settings')
+}
+
+export async function saveAdminSystemSetting(key, setting) {
+  return request(`/api/admin/system-settings/${encodeURIComponent(key)}`, {
+    method: 'PUT',
+    body: JSON.stringify(setting),
+  })
+}
+
+export async function deleteAdminSystemSetting(key) {
+  return request(`/api/admin/system-settings/${encodeURIComponent(key)}`, {
+    method: 'DELETE',
+  })
 }
 
 export async function createStaffAccount(profile) {

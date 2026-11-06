@@ -5,8 +5,11 @@ import {
   listDepartments,
   listStaffDesignations,
   listStaffDirectory,
+  listSystemSettings,
   listWards,
+  manageDepartment,
   manageStaffDesignation,
+  manageSystemSetting,
   setStaffPassword,
   setStaffActive,
   updateStaffAccount,
@@ -56,6 +59,34 @@ router.get('/departments', handleAdmin(async ({ config }) => listDepartments(con
 router.get('/wards', handleAdmin(async ({ config }) => listWards(config)))
 router.get('/designations', handleAdmin(async ({ config }) => listStaffDesignations(config)))
 router.get('/staff', handleAdmin(async ({ config }) => listStaffDirectory(config)))
+router.get('/system-settings', handleAdmin(async ({ config }) => listSystemSettings(config)))
+
+router.post('/departments', handleAdmin(async ({ req, res, config, userId }) => {
+  const department = await manageDepartment(config, userId, 'create', req.body)
+  res.status(201).json({ department, message: 'Department added.' })
+}))
+
+router.patch('/departments/:departmentId', handleAdmin(async ({ req, res, config, userId }) => {
+  const department = await manageDepartment(config, userId, 'update', req.body, req.params.departmentId)
+  res.json({ department, message: 'Department updated.' })
+}))
+
+router.put('/system-settings/:key', handleAdmin(async ({ req, res, config, userId }) => {
+  const setting = await manageSystemSetting(
+    config,
+    userId,
+    'upsert',
+    req.params.key,
+    req.body?.value,
+    req.body?.description,
+  )
+  res.json({ setting, message: 'System setting saved.' })
+}))
+
+router.delete('/system-settings/:key', handleAdmin(async ({ req, res, config, userId }) => {
+  const setting = await manageSystemSetting(config, userId, 'delete', req.params.key)
+  res.json({ setting, message: 'System setting deleted.' })
+}))
 
 router.get('/audit-logs', handleAdmin(async ({ config }) => {
   const query = new URLSearchParams({

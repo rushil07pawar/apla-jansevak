@@ -34,7 +34,8 @@ where schemaname = 'public'
   and tablename in ('departments', 'wards', 'profiles', 'staff_profiles',
                     'staff_ward_assignments', 'complaints',
                     'complaint_assignments', 'complaint_status_history',
-                    'staff_hierarchy', 'staff_permissions', 'admin_audit_logs')
+                    'staff_hierarchy', 'staff_permissions', 'staff_designations',
+                    'admin_audit_logs', 'system_settings')
 order by tablename;
 
 -- Expected application indexes
@@ -43,7 +44,8 @@ from pg_indexes
 where schemaname = 'public'
   and tablename in ('complaints', 'staff_ward_assignments',
                     'complaint_assignments', 'complaint_status_history',
-                    'staff_hierarchy', 'staff_permissions', 'admin_audit_logs')
+                    'staff_hierarchy', 'staff_permissions', 'staff_designations',
+                    'admin_audit_logs', 'system_settings')
 order by tablename, indexname;
 
 -- Review policies, including storage policies
@@ -52,7 +54,8 @@ from pg_policies
 where (schemaname = 'public' and tablename in ('departments', 'wards', 'profiles',
        'staff_profiles', 'staff_ward_assignments', 'complaints',
        'complaint_assignments', 'complaint_status_history',
-       'staff_hierarchy', 'staff_permissions', 'admin_audit_logs'))
+       'staff_hierarchy', 'staff_permissions', 'staff_designations',
+       'admin_audit_logs', 'system_settings'))
    or (schemaname = 'storage' and tablename = 'objects')
 order by schemaname, tablename, policyname;
 
@@ -64,7 +67,7 @@ group by datname, usename, application_name, state
 order by connections desc;
 ```
 
-For a meaningful RLS check, create disposable test users in a non-production project. Verify that citizen A cannot select or update citizen B's complaint; staff cannot access a complaint without the matching department, active ward assignment, and explicit `complaints.read` grant; and only the active, approved Main System Administrator can access across departments. Verify that staff cannot change their own staff profile, hierarchy, permissions, or ward assignments through the client. A citizen should upload only to their own complaint path, and staff outside its authorized department/ward and citizens other than the owner must not download its linked photo. Exercise status changes, assignments, and escalations through the server and verify each event is written to history. Browser role checks do not replace these database checks.
+For a meaningful RLS check, create disposable test users in a non-production project. Verify that citizen A cannot select or update citizen B's complaint; staff cannot access a complaint without the matching department, active ward assignment, and explicit `complaints.read` grant; and only the active, approved Main System Administrator can access across departments and all wards. Verify that the global administrator profile has a null department and no synthetic ward assignments, while ordinary staff remain department-scoped. Staff and citizens must not change their own administrator flags, staff profile, hierarchy, permissions, or ward assignments through the client. Confirm only the global administrator can read or mutate system settings and that department/setting changes are audit-logged. A citizen should upload only to their own complaint path, and staff outside its authorized department/ward and citizens other than the owner must not download its linked photo. Exercise status changes, assignments, and escalations through the server and verify each event is written to history. Browser role checks do not replace these database checks.
 
 See the [database migration runbook](database-migration-runbook.md) for all table relationships, policies, existing-Auth-user repair steps, and the exact application order. Do not apply the staff mobile PREPARE_ONLY migration as part of the corrected foundation.
 
