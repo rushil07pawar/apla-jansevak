@@ -16,6 +16,7 @@ The migration adds:
 - Bilingual name and designation fields, staff ID, official contact number, verification state, Main System Administrator marker, and update timestamp to `staff_profiles`. `mobile_e164` remains the unique Auth login identifier. No password is stored.
 - `staff_hierarchy` for each staff member's optional reporting officer and department.
 - `staff_permissions` for explicit complaint read, status-update, assignment, and escalation grants scoped to a department and ward.
+- `staff_designations` for bilingual, department-specific designation choices managed by the Main System Administrator. New staff profiles link to one active designation; older profiles can retain their existing free-text designation until the administrator maps them.
 - `admin_audit_logs` for staff profile, access, activation, and administrator-managed password changes.
 - Event type, assignee references, and structured details on the existing `complaint_status_history` table.
 
@@ -34,7 +35,7 @@ Administrator endpoints verify both the Auth token and the database Main System 
 ## Apply and bootstrap order
 
 1. Confirm that `20261031_001_supabase_foundation.sql` has already been applied. Do **not** rerun or replace it, and do not apply `20261105_002_staff_mobile_auth_PREPARE_ONLY.sql`.
-2. Review and manually apply `database/migrations/20261106_003_staff_management.sql`, then `database/migrations/20261106_004_admin_managed_staff_passwords.sql` in the Supabase SQL Editor. Apply them in that order. This repository does not apply SQL automatically.
+2. Review and manually apply `database/migrations/20261106_003_staff_management.sql`, `database/migrations/20261106_004_admin_managed_staff_passwords.sql`, and `database/migrations/20261106_005_staff_designations_and_roles.sql` in the Supabase SQL Editor. Apply them in that order. This repository does not apply SQL automatically.
 3. Designate the first Main System Administrator explicitly. The migration deliberately grants this privilege to nobody. Use an existing Auth user whose Auth phone is the chosen administrator username, is administratively marked confirmed, and matches a valid Indian E.164 number. Supabase requires the confirmation flag for phone/password sign-in; this does not mean an SMS verification was sent. First review the exact Auth user and department. Then run the following narrowly scoped bootstrap, replacing both placeholders only after verification:
 
    ```sql
@@ -63,10 +64,10 @@ Administrator endpoints verify both the Auth token and the database Main System 
 
    The department is required by the existing staff profile relationship; the Main System Administrator marker provides cross-department access. Do not select a department arbitrarily. If the Auth user already has a staff profile, do not use this insert—review and promote that specific row in a separately reviewed SQL statement. If the query returns no row, stop and check the Auth phone confirmation, UUID, department code, and existing administrator/profile rows. Do not weaken the predicates.
 
-4. Sign in at `/staff-login` using that Auth user's mobile number and existing password. New staff accounts are created by the Main System Administrator at `/staff/management`; enter the mobile username and a password of 12–128 characters. To change a staff password later, use **Set password** in the directory. Provide passwords to staff through a secure channel, and never send them in chat or store them in application tables.
+4. Sign in at `/staff-login` using that Auth user's 10-digit mobile number and password. New staff accounts are created by the Main System Administrator at `/staff/management`; configure an official department designation, enter the staff member's 10-digit mobile number, assign authorized wards and explicit permissions, and set a password of 12–128 characters. To change a staff password later, use **Reset password** in the directory. Provide passwords to staff through a secure channel, and never send them in chat or store them in application tables.
 5. Configure the Express server with `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, and `SUPABASE_SECRET_KEY` in server-only deployment/local secret settings. Keep the secret key out of Vercel client variables and all `VITE_` variables. Set `CLIENT_ORIGIN` and `VITE_API_URL` for the respective deployments.
 6. Deploy the Express API, then deploy the frontend. The frontend build remains in `client/`; the server is a separate service.
-7. Test administrator provisioning, phone/password login without OTP, administrator password changes, ward/department isolation, complaint actions, and private photo access in a non-production project before using the endpoints against production.
+7. Test administrator provisioning, 10-digit phone/password login, administrator password changes, role/ward/department isolation, complaint actions, and private photo access in a non-production project before using the endpoints against production.
 
 **No-verification tradeoff:** an administrator can create a login for any syntactically valid phone number without proving its owner controls that number. The organization must independently verify each staff member's identity and assigned mobile number before provisioning; a typo or recycled number could otherwise give the wrong person access.
 

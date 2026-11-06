@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { BrowserRouter, Link, Navigate, Route, Routes, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
-import { ArrowRight, CheckCircle2, ImagePlus, LogIn, MapPin, RefreshCw, Search, ShieldCheck, UserPlus } from 'lucide-react'
+import { ArrowRight, CheckCircle2, Eye, EyeOff, ImagePlus, LogIn, MapPin, RefreshCw, Search, ShieldCheck, UserPlus } from 'lucide-react'
 import { getCitizenIdentity, registerCitizen, signInCitizen, signInStaff } from './lib/auth'
 import { complaintCategories, getComplaint, submitComplaint } from './lib/complaints'
-import { createStaffAccount, getAdminAuditLogs, getAdminDepartments, getAdminStaff, getAdminWards, getStaffDashboard, setAdminStaffPassword, setStaffAccountActive, takeComplaintAction, updateStaffAccount } from './lib/staffManagement'
+import { createStaffAccount, createStaffDesignation, getAdminAuditLogs, getAdminDepartments, getAdminDesignations, getAdminStaff, getAdminWards, getStaffDashboard, setAdminStaffPassword, setStaffAccountActive, setStaffDesignationActive, takeComplaintAction, updateStaffAccount, updateStaffDesignation } from './lib/staffManagement'
 import { isSupabaseConfigured, requireSupabase } from './lib/supabaseClient'
 import './App.css'
 
@@ -217,20 +217,22 @@ function Auth({ register = false }) {
 function StaffAuth() {
   const [mobile, setMobile] = useState('')
   const [password, setPassword] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
+  const [showRecoveryHelp, setShowRecoveryHelp] = useState(false)
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
   const navigate = useNavigate()
 
   async function handleSubmit(event) {
     event.preventDefault()
+    if (!/^[6-9][0-9]{9}$/.test(mobile)) {
+      setMessage('Enter a valid Indian mobile number using exactly 10 digits, without +91.')
+      return
+    }
     setBusy(true)
     setMessage('')
     try {
-      const result = await signInStaff({ mobile, password })
-      if (result.staff.force_password_change) {
-        setMessage('Your account needs an administrator to set a password before you can sign in.')
-        return
-      }
+      await signInStaff({ mobile, password })
       navigate('/staff/dashboard', { replace: true })
     } catch (error) {
       setMessage(error.message || 'Unable to sign in with those credentials.')
@@ -245,16 +247,30 @@ function StaffAuth() {
         <div className="auth-intro">
           <p className="eyebrow">Separate staff access</p>
           <h1>Municipal Staff Login</h1>
-          <p>Sign in with your mobile number as username and the password set by your administrator. No verification code is required.</p>
+          <p>Use your registered 10-digit mobile number and password. Staff accounts are created by the Main System Administrator.</p>
         </div>
         <form className="form-card" onSubmit={handleSubmit} noValidate>
           <label className="field">
-            <span>Mobile number (username)</span>
-            <input type="tel" inputMode="tel" autoComplete="username" placeholder="+919876543210" value={mobile} onChange={event => setMobile(event.target.value)} required />
+            <span>Registered mobile number</span>
+            <input
+              type="text"
+              inputMode="numeric"
+              autoComplete="username"
+              placeholder="9876543210"
+              pattern="[6-9][0-9]{9}"
+              maxLength={10}
+              value={mobile}
+              onChange={event => setMobile(event.target.value)}
+              aria-invalid={Boolean(mobile) && !/^[6-9][0-9]{0,9}$/.test(mobile)}
+              required
+            />
+            <small className="field-hint">Enter exactly 10 digits, without +91, spaces, or symbols.</small>
           </label>
-          <label className="field"><span>Password</span><input type="password" autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} required /></label>
+          <label className="field"><span>Password</span><span className="password-input-wrap"><input type={showPassword ? 'text' : 'password'} autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} required /><button className="password-visibility" type="button" onClick={() => setShowPassword(value => !value)} aria-label={showPassword ? 'Hide password' : 'Show password'} aria-pressed={showPassword}>{showPassword ? <EyeOff size={19} /> : <Eye size={19} />}</button></span></label>
           <button className="button button-primary form-submit" type="submit" disabled={busy || !mobile || !password}>{busy ? 'Please wait…' : 'Staff Login'} <ArrowRight size={18} /></button>
-          {message && <p className="notice" role="status">{message}</p>}
+          <button className="text-button recovery-button" type="button" onClick={() => setShowRecoveryHelp(value => !value)}>Forgot password?</button>
+          {showRecoveryHelp && <p className="notice" role="status">For security, staff password resets are handled by the Main System Administrator. Contact your authorized administrator; they can set a new password from Staff Management.</p>}
+          {message && <p className="notice notice-error" role="alert">{message}</p>}
         </form>
       </section>
     </Layout>
@@ -629,8 +645,12 @@ function StaffDashboard() {
         <h1>Complaint Work Queue</h1>
         <p>Complaint records are limited by your active department, ward, and database-authorized permissions.</p>
         <dl className="details-list">
-          <div><dt>Role</dt><dd>{state.staff.role}</dd></div>
+          <div><dt>Staff member</dt><dd>{state.staff.full_name_mr || state.staff.full_name_en || state.staff.staff_id || 'Municipal staff'}</dd></div>
+          <div><dt>Role</dt><dd>{state.staff.is_main_system_admin ? 'Main System Administrator' : STAFF_ROLE_LABELS[state.staff.role] || state.staff.role}</dd></div>
+          <div><dt>Designation</dt><dd>{state.staff.designation_mr || state.staff.designation_en || 'Not recorded'}</dd></div>
           <div><dt>Department</dt><dd>{state.departments.find(department => department.id === state.staff.department_id)?.name || 'Cross-department administrator'}</dd></div>
+          <div><dt>Authorized wards</dt><dd>{state.staff.is_main_system_admin ? 'All active wards' : state.staff.authorized_wards?.length ? state.staff.authorized_wards.map(ward => `Ward ${String(ward.ward_number).padStart(2, '0')}`).join(', ') : 'None assigned'}</dd></div>
+          <div><dt>Reporting officer</dt><dd>{state.staff.reportsTo?.full_name_mr || state.staff.reportsTo?.full_name_en || state.staff.reportsTo?.staff_id || 'Not configured'}</dd></div>
         </dl>
         <div className="work-stat-grid">
           {[['Assigned to me', state.stats.assigned], ['Pending', state.stats.pending], ['Submitted', state.stats.submitted], ['In progress', state.stats.in_progress], ['Resolved', state.stats.resolved], ['Visible total', state.stats.total]].map(([label, value]) => <div key={label}><span>{label}</span><strong>{value}</strong></div>)}
@@ -713,15 +733,31 @@ function StaffDashboard() {
 function emptyStaffProfile() {
   return {
     staff_id: '', full_name_mr: '', full_name_en: '', designation_mr: '', designation_en: '',
-    department_id: '', mobile_e164: '', official_contact_number: '', role: 'staff',
+    designation_id: '', department_id: '', mobile_e164: '', official_contact_number: '', role: 'assigned_staff',
     active: true, profile_verified: false, ward_ids: [], permissions: [], reports_to_user_id: '',
   }
 }
 
+function emptyDesignationProfile() {
+  return { department_id: '', name_mr: '', name_en: '' }
+}
+
+const STAFF_ROLE_LABELS = {
+  administrator: 'Administrator (not Main System Administrator)',
+  department_head: 'Department Head',
+  supervising_officer: 'Supervising Officer',
+  junior_section_officer: 'Junior / Section Officer',
+  assigned_staff: 'Assigned Municipal Staff',
+  supervisor: 'Supervisor (legacy)',
+  staff: 'Staff (legacy)',
+}
+
 function StaffManagement() {
-  const [state, setState] = useState({ status: 'loading', departments: [], wards: [], staff: [], logs: [] })
+  const [state, setState] = useState({ status: 'loading', departments: [], designations: [], wards: [], staff: [], logs: [] })
   const [profile, setProfile] = useState(emptyStaffProfile)
+  const [designationProfile, setDesignationProfile] = useState(emptyDesignationProfile)
   const [editingId, setEditingId] = useState('')
+  const [editingDesignationId, setEditingDesignationId] = useState('')
   const [initialPassword, setInitialPassword] = useState('')
   const [confirmInitialPassword, setConfirmInitialPassword] = useState('')
   const [passwordTarget, setPasswordTarget] = useState(null)
@@ -734,10 +770,10 @@ function StaffManagement() {
   const [busy, setBusy] = useState(false)
 
   async function fetchDirectory() {
-    const [departments, wards, staff, logs] = await Promise.all([
-      getAdminDepartments(), getAdminWards(), getAdminStaff(), getAdminAuditLogs(),
+    const [departments, designations, wards, staff, logs] = await Promise.all([
+      getAdminDepartments(), getAdminDesignations(), getAdminWards(), getAdminStaff(), getAdminAuditLogs(),
     ])
-    return { status: 'loaded', departments, wards, staff, logs }
+    return { status: 'loaded', departments, designations, wards, staff, logs }
   }
 
   async function load() {
@@ -761,9 +797,12 @@ function StaffManagement() {
       full_name_en: row.full_name_en || '',
       designation_mr: row.designation_mr || '',
       designation_en: row.designation_en || '',
+      designation_id: state.designations.some(item => item.id === row.designation_id && item.is_active)
+        ? row.designation_id
+        : '',
       department_id: row.department_id,
-      mobile_e164: row.mobile_e164,
-      official_contact_number: row.official_contact_number,
+      mobile_e164: row.mobile_e164.replace(/^\+91/, ''),
+      official_contact_number: row.official_contact_number.replace(/^\+91/, ''),
       role: row.role,
       active: row.active,
       profile_verified: row.profile_verified,
@@ -772,6 +811,53 @@ function StaffManagement() {
       reports_to_user_id: row.reports_to_user_id || '',
     })
     window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
+  function editDesignation(designation) {
+    setEditingDesignationId(designation.id)
+    setDesignationProfile({
+      department_id: designation.department_id,
+      name_mr: designation.name_mr || '',
+      name_en: designation.name_en || '',
+    })
+  }
+
+  function cancelDesignationEdit() {
+    setEditingDesignationId('')
+    setDesignationProfile(emptyDesignationProfile())
+  }
+
+  async function submitDesignation(event) {
+    event.preventDefault()
+    if (!window.confirm(`${editingDesignationId ? 'Save changes to' : 'Add'} this department designation?`)) return
+    setBusy(true)
+    setMessage('')
+    try {
+      const result = editingDesignationId
+        ? await updateStaffDesignation(editingDesignationId, designationProfile)
+        : await createStaffDesignation(designationProfile)
+      setMessage(result.message)
+      cancelDesignationEdit()
+      await load()
+    } catch (error) {
+      setMessage(error.message || 'Unable to save this designation.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function toggleDesignationActive(designation) {
+    if (!window.confirm(`${designation.is_active ? 'Deactivate' : 'Activate'} this designation?`)) return
+    setBusy(true)
+    try {
+      const result = await setStaffDesignationActive(designation.id, !designation.is_active)
+      setMessage(result.message)
+      await load()
+    } catch (error) {
+      setMessage(error.message || 'Unable to change designation status.')
+    } finally {
+      setBusy(false)
+    }
   }
 
   function cancelEdit(keepMessage = false) {
@@ -889,6 +975,17 @@ function StaffManagement() {
     ['complaints.assign', 'Assign complaints'],
     ['complaints.escalate', 'Escalate'],
   ]
+  const departmentDesignations = state.designations.filter(item => item.department_id === profile.department_id && item.is_active)
+
+  function chooseDesignation(designationId) {
+    const designation = departmentDesignations.find(item => item.id === designationId)
+    setProfile(current => ({
+      ...current,
+      designation_id: designation?.id || '',
+      designation_mr: designation?.name_mr || '',
+      designation_en: designation?.name_en || '',
+    }))
+  }
 
   function renderHierarchy(rows, parentId = null, depth = 0) {
     const children = rows.filter(row => parentId
@@ -908,6 +1005,20 @@ function StaffManagement() {
         <div className="management-tabs" aria-label="Staff management sections"><button type="button" aria-pressed={tab === 'directory'} onClick={() => setTab('directory')}>Department directory</button><button type="button" aria-pressed={tab === 'audit'} onClick={() => setTab('audit')}>Audit log</button></div>
         {message && <p className="notice" role="status">{message}</p>}
         {tab === 'directory' ? <>
+          <section className="form-card staff-editor">
+            <h2>Department designations</h2>
+            <p className="field-hint">Maintain the designation choices available when creating staff profiles. Add only titles verified against official municipal records.</p>
+            <form className="management-form-grid" onSubmit={submitDesignation}>
+              <label className="field"><span>Department</span><select required value={designationProfile.department_id} onChange={event => setDesignationProfile({ ...designationProfile, department_id: event.target.value })}><option value="">Select department</option>{state.departments.map(department => <option key={department.id} value={department.id}>{department.name_mr} · {department.name}</option>)}</select></label>
+              <label className="field"><span>Designation (Marathi)</span><input value={designationProfile.name_mr} onChange={event => setDesignationProfile({ ...designationProfile, name_mr: event.target.value })} maxLength={180} /></label>
+              <label className="field"><span>Designation (English)</span><input value={designationProfile.name_en} onChange={event => setDesignationProfile({ ...designationProfile, name_en: event.target.value })} maxLength={180} /></label>
+              <div className="editor-actions"><button className="button button-primary" type="submit" disabled={busy || !designationProfile.department_id || (!designationProfile.name_mr.trim() && !designationProfile.name_en.trim())}>{busy ? 'Saving…' : editingDesignationId ? 'Save designation' : 'Add designation'}</button>{editingDesignationId && <button className="button button-secondary" type="button" onClick={cancelDesignationEdit}>Cancel</button>}</div>
+            </form>
+            <div className="designation-list">{state.designations.map(designation => {
+              const department = state.departments.find(item => item.id === designation.department_id)
+              return <article className="directory-person" key={designation.id}><div><strong>{designation.name_mr || designation.name_en}</strong>{designation.name_mr && designation.name_en && <span>{designation.name_en}</span>}<small>{department?.name || 'Department'}</small></div><span className={designation.is_active ? 'staff-status status-active' : 'staff-status'}>{designation.is_active ? 'Active' : 'Inactive'}</span><div className="directory-actions"><button type="button" className="text-button" disabled={busy} onClick={() => editDesignation(designation)}>Edit</button><button type="button" className="text-button" disabled={busy} onClick={() => toggleDesignationActive(designation)}>{designation.is_active ? 'Deactivate' : 'Activate'}</button></div></article>
+            })}</div>
+          </section>
           {passwordTarget && <form className="form-card staff-editor" onSubmit={submitAdminPassword}>
             <h2>Set staff password</h2>
             <p className="field-hint">The password is saved by Supabase Auth and is never stored in the staff profile. No phone or email verification is sent.</p>
@@ -921,18 +1032,17 @@ function StaffManagement() {
             <p className="field-hint">The mobile number is the username. An administrator sets the password; no phone or email verification is required. Passwords are stored only in Supabase Auth, never in the staff profile.</p>
             <div className="management-form-grid">
               <label className="field"><span>Staff ID</span><input value={profile.staff_id} onChange={event => setProfile({ ...profile, staff_id: event.target.value })} maxLength="80" /></label>
-              <label className="field"><span>Department</span><select required value={profile.department_id} onChange={event => setProfile({ ...profile, department_id: event.target.value, reports_to_user_id: '' })}><option value="">Select department</option>{state.departments.map(department => <option key={department.id} value={department.id}>{department.name_mr} · {department.name}</option>)}</select></label>
+              <label className="field"><span>Department</span><select required value={profile.department_id} onChange={event => setProfile({ ...profile, department_id: event.target.value, designation_id: '', designation_mr: '', designation_en: '', reports_to_user_id: '' })}><option value="">Select department</option>{state.departments.map(department => <option key={department.id} value={department.id}>{department.name_mr} · {department.name}</option>)}</select></label>
               <label className="field"><span>Full name (Marathi)</span><input value={profile.full_name_mr} onChange={event => setProfile({ ...profile, full_name_mr: event.target.value })} /></label>
               <label className="field"><span>Full name (English)</span><input value={profile.full_name_en} onChange={event => setProfile({ ...profile, full_name_en: event.target.value })} /></label>
-              <label className="field"><span>Designation (Marathi)</span><input value={profile.designation_mr} onChange={event => setProfile({ ...profile, designation_mr: event.target.value })} /></label>
-              <label className="field"><span>Designation (English)</span><input value={profile.designation_en} onChange={event => setProfile({ ...profile, designation_en: event.target.value })} /></label>
-              <label className="field"><span>Staff login mobile (India)</span><input type="tel" placeholder="+919876543210" required disabled={Boolean(editingId)} value={profile.mobile_e164} onChange={event => setProfile({ ...profile, mobile_e164: event.target.value })} /></label>
+              <label className="field"><span>Configured designation</span><select required={!editingId} value={profile.designation_id} onChange={event => chooseDesignation(event.target.value)}><option value="">{editingId ? 'Keep existing designation' : 'Select designation'}</option>{departmentDesignations.map(designation => <option key={designation.id} value={designation.id}>{designation.name_mr}{designation.name_mr && designation.name_en ? ' · ' : ''}{designation.name_en}</option>)}</select><small className="field-hint">{editingId && !profile.designation_id ? `Existing: ${profile.designation_mr || profile.designation_en}. Choose a configured title to replace it.` : 'Add a verified designation above if the correct title is not listed.'}</small></label>
+              <label className="field"><span>Staff login mobile (10 digits)</span><input type="text" inputMode="numeric" placeholder="9876543210" pattern="[6-9][0-9]{9}" maxLength={10} required disabled={Boolean(editingId)} value={profile.mobile_e164} onChange={event => setProfile({ ...profile, mobile_e164: event.target.value })} /><small className="field-hint">Enter exactly 10 digits. The server stores it in Supabase's normalized +91 format.</small></label>
               {!editingId && <>
                 <label className="field"><span>Password (12–128 characters)</span><input type="password" autoComplete="new-password" minLength="12" maxLength="128" required value={initialPassword} onChange={event => setInitialPassword(event.target.value)} /></label>
                 <label className="field"><span>Confirm password</span><input type="password" autoComplete="new-password" minLength="12" maxLength="128" required value={confirmInitialPassword} onChange={event => setConfirmInitialPassword(event.target.value)} /></label>
               </>}
-              <label className="field"><span>Official contact number</span><input type="tel" placeholder="+919876543210" value={profile.official_contact_number} onChange={event => setProfile({ ...profile, official_contact_number: event.target.value })} /></label>
-              <label className="field"><span>Account role</span><select value={profile.role} onChange={event => setProfile({ ...profile, role: event.target.value })}><option value="staff">Staff</option><option value="supervisor">Supervisor</option><option value="administrator">Administrator (not Main System Administrator)</option></select></label>
+              <label className="field"><span>Official contact number (10 digits)</span><input type="text" inputMode="numeric" placeholder="9876543210" pattern="[6-9][0-9]{9}" maxLength={10} value={profile.official_contact_number} onChange={event => setProfile({ ...profile, official_contact_number: event.target.value })} /><small className="field-hint">Enter exactly 10 digits; this number is not shown to citizens.</small></label>
+              <label className="field"><span>Account role</span><select value={profile.role} onChange={event => setProfile({ ...profile, role: event.target.value })}>{Object.entries(STAFF_ROLE_LABELS).filter(([value]) => ['department_head', 'supervising_officer', 'junior_section_officer', 'assigned_staff'].includes(value) || (editingId && value === profile.role)).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><small className="field-hint">Role labels do not grant access by themselves. Ward-scoped permissions below are enforced by the database. Administrator and legacy roles cannot be assigned to new accounts.</small></label>
               <label className="field"><span>Reporting officer</span><select value={profile.reports_to_user_id} onChange={event => setProfile({ ...profile, reports_to_user_id: event.target.value })}><option value="">No reporting officer configured</option>{state.staff.filter(row => row.department_id === profile.department_id && row.user_id !== editingId && row.active && row.approved && !row.force_password_change).map(row => <option key={row.user_id} value={row.user_id}>{row.full_name_mr || row.full_name_en || row.staff_id}</option>)}</select></label>
             </div>
             <fieldset className="management-fieldset"><legend>Authorized wards</legend><div className="ward-checkboxes">{state.wards.map(ward => <label key={ward.id}><input type="checkbox" checked={profile.ward_ids.includes(ward.id)} disabled={!ward.is_active && !profile.ward_ids.includes(ward.id)} onChange={() => toggleWard(ward.id)} /> Ward {String(ward.ward_number).padStart(2, '0')} · {ward.ward_name}{!ward.is_active && ' (inactive)'}</label>)}</div></fieldset>
@@ -942,7 +1052,7 @@ function StaffManagement() {
             })}{!profile.ward_ids.length && <p className="field-hint">Choose wards before granting complaint permissions.</p>}</fieldset>
             <label className="verification-check"><input type="checkbox" checked={profile.profile_verified} onChange={event => setProfile({ ...profile, profile_verified: event.target.checked })} /><span>Names, staff ID, designation, and reporting details have been verified against the official directory. Unverified profiles remain unapproved.</span></label>
             <label className="verification-check"><input type="checkbox" checked={profile.active} onChange={event => setProfile({ ...profile, active: event.target.checked })} /><span>Account active</span></label>
-            <div className="editor-actions"><button className="button button-primary" type="submit" disabled={busy || !profile.department_id || !profile.mobile_e164}>{busy ? 'Saving…' : editingId ? 'Save staff changes' : 'Create staff account'}</button>{editingId && <button className="button button-secondary" type="button" onClick={cancelEdit}>Cancel</button>}</div>
+            <div className="editor-actions"><button className="button button-primary" type="submit" disabled={busy || !profile.department_id || !profile.mobile_e164 || (!editingId && !profile.designation_id)}>{busy ? 'Saving…' : editingId ? 'Save staff changes' : 'Create staff account'}</button>{editingId && <button className="button button-secondary" type="button" onClick={cancelEdit}>Cancel</button>}</div>
           </form>
           <div className="directory-controls">
             <label className="field"><span>Search staff by name, ID, or designation</span><div className="search-field"><Search size={18} /><input value={search} onChange={event => setSearch(event.target.value)} /></div></label>

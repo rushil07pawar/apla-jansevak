@@ -76,9 +76,55 @@ export async function listWards(config) {
   return request(config, `/rest/v1/wards?${query}`)
 }
 
+export async function listStaffDesignations(config) {
+  const query = new URLSearchParams({
+    select: 'id,department_id,name_mr,name_en,is_active,created_at,updated_at',
+    order: 'department_id.asc,name_en.asc',
+  })
+  return request(config, `/rest/v1/staff_designations?${query}`)
+}
+
+export async function manageStaffDesignation(config, actorId, action, input = {}, designationId = null) {
+  if (!['create', 'update', 'set_active'].includes(action) ||
+      (designationId !== null && !UUID_PATTERN.test(designationId)) ||
+      (action !== 'create' && !designationId)) {
+    const error = new Error('Invalid staff designation request.')
+    error.status = 400
+    throw error
+  }
+  const departmentId = typeof input.department_id === 'string' ? input.department_id : ''
+  const nameMr = typeof input.name_mr === 'string' ? input.name_mr.trim() : ''
+  const nameEn = typeof input.name_en === 'string' ? input.name_en.trim() : ''
+  const active = input.is_active !== false
+  if ((action === 'create' || action === 'update') &&
+      (!UUID_PATTERN.test(departmentId) || (!nameMr && !nameEn) ||
+       nameMr.length > 180 || nameEn.length > 180)) {
+    const error = new Error('Choose a department and enter a Marathi or English designation up to 180 characters.')
+    error.status = 400
+    throw error
+  }
+  if (action === 'set_active' && typeof input.is_active !== 'boolean') {
+    const error = new Error('Choose whether this designation should be active.')
+    error.status = 400
+    throw error
+  }
+  return request(config, '/rest/v1/rpc/manage_staff_designation', {
+    method: 'POST',
+    body: JSON.stringify({
+      p_actor: actorId,
+      p_action: action,
+      p_designation_id: designationId,
+      p_department_id: departmentId || null,
+      p_name_mr: nameMr || null,
+      p_name_en: nameEn || null,
+      p_is_active: active,
+    }),
+  })
+}
+
 export async function listStaffDirectory(config) {
   const staffQuery = new URLSearchParams({
-    select: 'user_id,staff_id,full_name_mr,full_name_en,designation_mr,designation_en,department_id,mobile_e164,official_contact_number,role,active,approved,force_password_change,profile_verified,is_main_system_admin,updated_at,department:departments(id,code,name,name_mr)',
+    select: 'user_id,staff_id,full_name_mr,full_name_en,designation_id,designation_mr,designation_en,department_id,mobile_e164,official_contact_number,role,active,approved,force_password_change,profile_verified,is_main_system_admin,updated_at,department:departments(id,code,name,name_mr)',
     order: 'department_id.asc,staff_id.asc',
   })
   const staff = await request(config, `/rest/v1/staff_profiles?${staffQuery}`)
@@ -99,10 +145,21 @@ export async function listStaffDirectory(config) {
   }))
 }
 
-function validateProfile(input) {
+async function validateProfile(config, input, { requireDesignation = false } = {}) {
   const mobile = normalizeIndianMobile(input?.mobile_e164)
   const departmentId = typeof input?.department_id === 'string' ? input.department_id : ''
-  const role = ['staff', 'supervisor', 'administrator'].includes(input?.role) ? input.role : ''
+  const allRoles = [
+    'staff',
+    'supervisor',
+    'administrator',
+    'department_head',
+    'supervising_officer',
+    'junior_section_officer',
+    'assigned_staff',
+  ]
+  const creatableRoles = ['department_head', 'supervising_officer', 'junior_section_officer', 'assigned_staff']
+  const role = (requireDesignation ? creatableRoles : allRoles).includes(input?.role) ? input.role : ''
+  const designationId = typeof input?.designation_id === 'string' ? input.designation_id : ''
   const textFields = ['staff_id', 'full_name_mr', 'full_name_en', 'designation_mr', 'designation_en']
   const profile = Object.fromEntries(textFields.map(field => [
     field,
@@ -117,11 +174,13 @@ function validateProfile(input) {
   if (!mobile || !UUID_PATTERN.test(departmentId) || !role ||
       !officialContact ||
       (!profile.full_name_mr && !profile.full_name_en) ||
-      (!profile.designation_mr && !profile.designation_en) ||
+      (!designationId && !profile.designation_mr && !profile.designation_en) ||
       profile.staff_id.length > 80 ||
       Object.values(profile).some(value => value.length > 180) ||
       typeof (input?.active ?? true) !== 'boolean' ||
       typeof (input?.profile_verified ?? false) !== 'boolean' ||
+      (designationId !== '' && !UUID_PATTERN.test(designationId)) ||
+      (requireDesignation && !designationId) ||
       !Array.isArray(rawWards) ||
       rawWards.some(id => typeof id !== 'string' || !UUID_PATTERN.test(id)) ||
       !Array.isArray(rawPermissions) ||
@@ -136,6 +195,23 @@ function validateProfile(input) {
     const error = new Error('Enter a valid mobile number, department, name, designation, and role.')
     error.status = 400
     throw error
+  }
+  if (designationId) {
+    const designationQuery = new URLSearchParams({
+      select: 'id,department_id,name_mr,name_en,is_active',
+      id: `eq.${designationId}`,
+      department_id: `eq.${departmentId}`,
+      is_active: 'eq.true',
+      limit: '1',
+    })
+    const [designation] = await request(config, `/rest/v1/staff_designations?${designationQuery}`)
+    if (!designation) {
+      const error = new Error('Select an active designation configured for this department.')
+      error.status = 400
+      throw error
+    }
+    profile.designation_mr = designation.name_mr || ''
+    profile.designation_en = designation.name_en || ''
   }
   const wards = [...new Set(rawWards)]
   if (rawPermissions.some((item, index) =>
@@ -152,6 +228,7 @@ function validateProfile(input) {
     profile: {
       ...profile,
       department_id: departmentId,
+      designation_id: designationId || null,
       mobile_e164: mobile,
       official_contact_number: officialContact,
       role,
@@ -180,6 +257,26 @@ async function manageStaff(config, actorId, action, staffUserId, data = {}) {
   })
 }
 
+async function saveStaffDesignation(config, staffUserId, designationId) {
+  const query = new URLSearchParams({ user_id: `eq.${staffUserId}` })
+  const response = await fetch(`${config.url}/rest/v1/staff_profiles?${query}`, {
+    method: 'PATCH',
+    headers: { ...headers(config), prefer: 'return=representation' },
+    body: JSON.stringify({ designation_id: designationId }),
+  })
+  if (!response.ok) {
+    const error = new Error('Staff profile was saved, but its configured designation could not be linked.')
+    error.status = 502
+    throw error
+  }
+  const [profile] = await response.json()
+  if (!profile || profile.designation_id !== designationId) {
+    const error = new Error('The configured designation changed during save. Verify the staff profile before continuing.')
+    error.status = 409
+    throw error
+  }
+}
+
 function validateStaffPassword(password) {
   if (typeof password !== 'string' || password.length < 12 || password.length > 128) {
     const error = new Error('Set a staff password between 12 and 128 characters.')
@@ -206,12 +303,13 @@ async function deleteAuthUser(config, userId) {
 }
 
 export async function createStaffAccount(config, actorId, input) {
-  const normalized = validateProfile(input)
+  const normalized = await validateProfile(config, input, { requireDesignation: true })
   const password = validateStaffPassword(input?.password)
   const authUser = await createAuthUser(config, normalized.profile.mobile_e164, password)
   if (!authUser?.id) throw new Error('Supabase Auth did not return the new staff user ID.')
   try {
     const profile = await manageStaff(config, actorId, 'upsert', authUser.id, normalized)
+    await saveStaffDesignation(config, authUser.id, normalized.profile.designation_id)
     await recordStaffPasswordSet(config, actorId, authUser.id)
     return { profile }
   } catch (error) {
@@ -228,7 +326,7 @@ export async function updateStaffAccount(config, actorId, staffUserId, input) {
     error.status = 400
     throw error
   }
-  const normalized = validateProfile(input)
+  const normalized = await validateProfile(config, input)
   const query = new URLSearchParams({
     select: 'user_id,mobile_e164',
     user_id: `eq.${staffUserId}`,
@@ -249,6 +347,7 @@ export async function updateStaffAccount(config, actorId, staffUserId, input) {
   }
   try {
     const profile = await manageStaff(config, actorId, 'upsert', staffUserId, normalized)
+    await saveStaffDesignation(config, staffUserId, normalized.profile.designation_id)
     if (mobileChanged) await recordStaffPasswordSet(config, actorId, staffUserId)
     return { profile }
   } catch (error) {
@@ -332,7 +431,7 @@ export async function authorizeStaffSession(req) {
   }
   const user = await authenticatedUser(config, token)
   const query = new URLSearchParams({
-    select: 'user_id,department_id,role,active,approved,force_password_change,is_main_system_admin',
+    select: 'user_id,staff_id,full_name_mr,full_name_en,designation_id,designation_mr,designation_en,department_id,role,active,approved,force_password_change,is_main_system_admin',
     user_id: `eq.${user.id}`,
     limit: '1',
   })
@@ -427,14 +526,41 @@ export async function getStaffDashboard(config, userId, staff) {
   }
   const managerRows = await request(config, `/rest/v1/staff_hierarchy?${new URLSearchParams({ select: 'reports_to_user_id', staff_user_id: `eq.${userId}`, limit: '1' })}`)
   const managerId = managerRows[0]?.reports_to_user_id || null
+  let reportsTo = null
+  if (managerId) {
+    const managerQuery = new URLSearchParams({
+      select: 'user_id,staff_id,full_name_mr,full_name_en,designation_mr,designation_en',
+      user_id: `eq.${managerId}`,
+      limit: '1',
+    })
+    const managerProfiles = await request(config, `/rest/v1/staff_profiles?${managerQuery}`)
+    reportsTo = managerProfiles[0] || null
+  }
   const dashboardStaff = {
     ...staff,
     user_id: userId,
+    is_main_system_admin: staff.is_main_system_admin,
+    authorized_wards: wards,
+    ward_permissions: [...permissions],
     canUpdate: permissions.has('complaints.update'),
     canAssign: permissions.has('complaints.assign'),
     canEscalate: permissions.has('complaints.escalate'),
     canRoute: Boolean(staff.is_main_system_admin),
     managerId,
+    reportsTo,
+  }
+  const assignedOnlyRoles = ['staff', 'assigned_staff', 'junior_section_officer']
+  let assignedComplaintIds = null
+  if (!staff.is_main_system_admin && assignedOnlyRoles.includes(staff.role)) {
+    const assignedRows = await request(config, `/rest/v1/complaint_assignments?${new URLSearchParams({
+      select: 'complaint_id',
+      staff_user_id: `eq.${userId}`,
+      unassigned_at: 'is.null',
+    })}`)
+    assignedComplaintIds = [...new Set(assignedRows.map(row => row.complaint_id))]
+    if (!assignedComplaintIds.length) {
+      return { staff: dashboardStaff, complaints: [], staffOptions, departments, wards, stats: emptyStats() }
+    }
   }
   if (!scopes.length) return { staff: dashboardStaff, complaints: [], staffOptions, departments, wards, stats: emptyStats() }
 
@@ -448,6 +574,7 @@ export async function getStaffDashboard(config, userId, staff) {
     order: 'created_at.desc',
     limit: '500',
   })
+  if (assignedComplaintIds) complaintQuery.set('id', `in.(${assignedComplaintIds.join(',')})`)
   const complaints = await request(config, `/rest/v1/complaints?${complaintQuery}`)
   if (!complaints.length) return { staff: dashboardStaff, complaints, staffOptions, departments, wards, stats: emptyStats() }
   const ids = `in.(${complaints.map(complaint => complaint.id).join(',')})`
@@ -510,6 +637,46 @@ export async function manageComplaint(config, actorId, complaintId, input) {
     const error = new Error('Invalid complaint action.')
     error.status = 400
     throw error
+  }
+  const actorQuery = new URLSearchParams({
+    select: 'role,is_main_system_admin',
+    user_id: `eq.${actorId}`,
+    limit: '1',
+  })
+  const [actor] = await request(config, `/rest/v1/staff_profiles?${actorQuery}`)
+  if (!actor) {
+    const error = new Error('Authorized municipal staff account required.')
+    error.status = 403
+    throw error
+  }
+  const delegatedRoles = ['department_head', 'supervising_officer', 'supervisor', 'administrator']
+  if (
+    !actor.is_main_system_admin &&
+    ['assign', 'escalate'].includes(input.action) &&
+    !delegatedRoles.includes(actor.role)
+  ) {
+    const error = new Error('Your staff role does not allow assigning or forwarding complaints.')
+    error.status = 403
+    throw error
+  }
+  if (
+    !actor.is_main_system_admin &&
+    input.action === 'status' &&
+    ['staff', 'assigned_staff', 'junior_section_officer'].includes(actor.role)
+  ) {
+    const assignmentQuery = new URLSearchParams({
+      select: 'id',
+      complaint_id: `eq.${complaintId}`,
+      staff_user_id: `eq.${actorId}`,
+      unassigned_at: 'is.null',
+      limit: '1',
+    })
+    const [assignment] = await request(config, `/rest/v1/complaint_assignments?${assignmentQuery}`)
+    if (!assignment) {
+      const error = new Error('You can update only complaints currently assigned to you.')
+      error.status = 403
+      throw error
+    }
   }
   const assignee = typeof input.assignee_id === 'string' &&
     UUID_PATTERN.test(input.assignee_id)

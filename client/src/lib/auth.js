@@ -117,11 +117,19 @@ export async function signInCitizen({ email, password }) {
 }
 
 export async function signInStaff({ mobile, password }) {
-  const response = await fetch(`${apiUrl}/api/staff-auth/login`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ mobile, password }),
-  })
+  let response
+  try {
+    response = await fetch(`${apiUrl}/api/staff-auth/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ mobile, password }),
+    })
+  } catch (error) {
+    if (error instanceof TypeError) {
+      throw new Error('Could not reach the staff login service. Check the API URL and your network, then try again.')
+    }
+    throw error
+  }
   const data = await response.json().catch(() => ({}))
   if (!response.ok) throw new Error(data.message || 'Unable to sign in with those credentials.')
   if (!data.session || !data.staff) throw new Error('Unable to verify this staff session.')

@@ -8,7 +8,7 @@ alter table public.departments
 insert into public.departments (code, name, name_mr)
 values
   ('CONSTRUCTION', 'Construction Department', 'बांधकाम विभाग'),
-  ('WATER_DRAINAGE', 'Water Supply and Drainage Department', 'पाणी पुरवठा व मलनिस्सारण'),
+  ('WATER_DRAINAGE', 'Water Supply and Drainage Department', 'पाणी पुरवठा व मलनिस्सारण विभाग'),
   ('GARDEN', 'Garden Department', 'उद्यान विभाग'),
   ('SANITATION', 'Sanitation Department', 'स्वच्छता विभाग'),
   ('ELECTRICITY', 'Electricity Department', 'विद्युत विभाग'),

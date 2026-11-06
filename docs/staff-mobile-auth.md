@@ -1,13 +1,13 @@
 # Municipal staff mobile authentication
 
-Staff sign in with their Indian mobile number as username and a password through Supabase Auth. The client sends credentials to `POST /api/staff-auth/login`; the Express server submits them to Supabase's phone/password flow and verifies the matching active, approved `staff_profiles` row. No SMS or email verification is part of staff sign-in. Public staff registration is not available.
+Staff enter exactly 10 digits (without `+91`) and a password. The server normalizes the number to `+91` plus those digits for Supabase Auth and stores that single normalized format in `staff_profiles`. It verifies the matching active and approved staff profile, an active ward assignment and `complaints.read` scope (unless the user is the Main System Administrator), and returns department, designation, authorized wards, permissions, and reporting officer. Citizens and inactive, unapproved, or unassigned accounts are rejected. No SMS or email verification is part of staff sign-in. Public staff registration is not available.
 
 ## Required Supabase and server configuration
 
 1. Enable Supabase Phone Auth for password-based sign-in. Staff accounts are created through the Admin API with the phone marked confirmed; no OTP is sent.
 2. Configure Auth password rules and rate limits. Consider MFA for administrators. Phone numbers can be mistyped or recycled, so verify staff identity and number through municipal procedures before creating the account.
 3. Store `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, and `SUPABASE_SECRET_KEY` only in backend deployment secrets. A legacy service-role key may be accepted server-side, but must never appear in browser code or any `VITE_` variable.
-4. Apply the foundation migration, then the [staff management migration](../database/migrations/20261106_003_staff_management.sql), then [admin-managed staff passwords](../database/migrations/20261106_004_admin_managed_staff_passwords.sql). Do not apply `20261105_002_staff_mobile_auth_PREPARE_ONLY.sql`.
+4. Apply the foundation migration, then the [staff management migration](../database/migrations/20261106_003_staff_management.sql), [admin-managed staff passwords](../database/migrations/20261106_004_admin_managed_staff_passwords.sql), and [staff designations and roles](../database/migrations/20261106_005_staff_designations_and_roles.sql). Do not apply `20261105_002_staff_mobile_auth_PREPARE_ONLY.sql`.
 
 ## Account provisioning and passwords
 
@@ -15,7 +15,7 @@ Only the designated Main System Administrator can create staff accounts through 
 
 The server creates staff Auth users with the trusted `app_metadata.account_type = 'staff'` marker. The database trigger skips citizen-profile creation only for those server-created accounts. Public sign-up cannot set Auth app metadata. Existing Auth users are preserved; the first Main System Administrator must be explicitly bootstrapped by a project owner as described in [staff-management.md](staff-management.md).
 
-No verification means Supabase does not prove that the account holder controls the entered phone number. Only provision staff after an administrator has independently confirmed the staff member's identity and assigned mobile number. Use HTTPS for the deployed API, keep service credentials server-side, and never send passwords in chat.
+No verification means Supabase does not prove that the account holder controls the entered phone number. Only provision staff after an administrator has independently confirmed the staff member's identity and assigned mobile number. Use HTTPS for the deployed API, keep service credentials server-side, and never send passwords in chat. The staff login has no self-service OTP reset; a verified Main System Administrator must set a new password through Staff Management.
 
 ## Authorization and testing
 

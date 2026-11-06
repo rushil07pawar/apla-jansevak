@@ -3,8 +3,10 @@ import {
   authorizeMainAdministrator,
   createStaffAccount,
   listDepartments,
+  listStaffDesignations,
   listStaffDirectory,
   listWards,
+  manageStaffDesignation,
   setStaffPassword,
   setStaffActive,
   updateStaffAccount,
@@ -52,6 +54,7 @@ function handleAdmin(handler, limit) {
 
 router.get('/departments', handleAdmin(async ({ config }) => listDepartments(config)))
 router.get('/wards', handleAdmin(async ({ config }) => listWards(config)))
+router.get('/designations', handleAdmin(async ({ config }) => listStaffDesignations(config)))
 router.get('/staff', handleAdmin(async ({ config }) => listStaffDirectory(config)))
 
 router.get('/audit-logs', handleAdmin(async ({ config }) => {
@@ -72,6 +75,21 @@ router.post('/staff', handleAdmin(async ({ req, res, config, userId }) => {
   const result = await createStaffAccount(config, userId, req.body)
   res.status(201).json({ staff: result.profile, message: 'Staff account created. Share the password with the staff member through a secure channel.' })
 }, { action: 'staff-create', max: 10 }))
+
+router.post('/designations', handleAdmin(async ({ req, res, config, userId }) => {
+  const designation = await manageStaffDesignation(config, userId, 'create', req.body)
+  res.status(201).json({ designation, message: 'Designation added.' })
+}, { action: 'designation-create', max: 30 }))
+
+router.patch('/designations/:designationId', handleAdmin(async ({ req, res, config, userId }) => {
+  const designation = await manageStaffDesignation(config, userId, 'update', req.body, req.params.designationId)
+  res.json({ designation, message: 'Designation updated.' })
+}))
+
+router.patch('/designations/:designationId/active', handleAdmin(async ({ req, res, config, userId }) => {
+  const designation = await manageStaffDesignation(config, userId, 'set_active', req.body, req.params.designationId)
+  res.json({ designation, message: 'Designation status updated.' })
+}))
 
 router.patch('/staff/:userId', handleAdmin(async ({ req, res, config, userId }) => {
   const result = await updateStaffAccount(config, userId, req.params.userId, req.body)

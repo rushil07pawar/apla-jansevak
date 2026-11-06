@@ -435,6 +435,35 @@
   outline: 3px solid rgba(17, 101, 83, 0.14);
 }
 
+.password-input-wrap {
+  position: relative;
+  display: block;
+}
+
+.password-input-wrap input {
+  padding-right: 50px;
+}
+
+.password-visibility {
+  position: absolute;
+  top: 50%;
+  right: 7px;
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  color: #35564d;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  transform: translateY(-50%);
+}
+
+.password-visibility:focus-visible {
+  outline: 3px solid rgba(17, 101, 83, 0.3);
+}
+
 .field [aria-invalid='true'] {
   border-color: var(--error);
 }
@@ -988,6 +1017,12 @@
 
 .staff-editor {
   margin-bottom: 26px;
+}
+
+.designation-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 20px;
 }
 
 .staff-editor h2,

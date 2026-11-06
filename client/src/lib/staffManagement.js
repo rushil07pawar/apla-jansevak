@@ -41,6 +41,31 @@ export async function getAdminWards() {
   return request('/api/admin/wards')
 }
 
+export async function getAdminDesignations() {
+  return request('/api/admin/designations')
+}
+
+export async function createStaffDesignation(designation) {
+  return request('/api/admin/designations', {
+    method: 'POST',
+    body: JSON.stringify(designation),
+  })
+}
+
+export async function updateStaffDesignation(designationId, designation) {
+  return request(`/api/admin/designations/${encodeURIComponent(designationId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(designation),
+  })
+}
+
+export async function setStaffDesignationActive(designationId, active) {
+  return request(`/api/admin/designations/${encodeURIComponent(designationId)}/active`, {
+    method: 'PATCH',
+    body: JSON.stringify({ is_active: active }),
+  })
+}
+
 export async function getAdminStaff() {
   return request('/api/admin/staff')
 }
