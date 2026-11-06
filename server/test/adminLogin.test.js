@@ -73,8 +73,8 @@ test('admin login grants sessions only to database-verified Main System Administ
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
     const origin = `http://127.0.0.1:${server.address().port}`
 
-    async function signIn(mobile) {
-      return originalFetch(`${origin}/api/staff-auth/admin-login`, {
+    async function signIn(mobile, path = '/api/staff-auth/admin-login') {
+      return originalFetch(`${origin}${path}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
@@ -101,6 +101,8 @@ test('admin login grants sessions only to database-verified Main System Administ
     const staffResponse = await signIn('9876543211')
     assert.equal(staffResponse.status, 401)
     assert.deepEqual(await staffResponse.json(), { message: 'Unable to sign in with those credentials.' })
+    const municipalStaffLogin = await signIn('9876543211', '/api/staff-auth/login')
+    assert.equal(municipalStaffLogin.status, 200)
 
     profileKind = 'citizen'
     const citizenResponse = await signIn('9876543212')

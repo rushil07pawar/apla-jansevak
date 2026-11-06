@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { timingSafeEqual } from 'node:crypto'
+import { randomUUID, timingSafeEqual } from 'node:crypto'
 import { adminSetupKey, authorizeStaffLogin, fixedWindowRateLimit, normalizeIndianMobile, passwordSession, staffAuthConfig, staffAuthEnvironmentStatus } from '../lib/staffAuth.js'
 import { requestAuthAdminUser, safeAuthResponseDetails } from '../lib/adminAuthRequest.js'
 
@@ -18,15 +18,15 @@ const adminSetupLimit = fixedWindowRateLimit({
   key: req => `admin-setup:${ip(req)}`,
 })
 
-async function mainAdministratorExists(config) {
+async function mainAdministratorSetupState(config) {
   const query = new URLSearchParams({
-    select: 'user_id',
-    is_main_system_admin: 'eq.true',
+    select: 'setup_completed,setup_claim_id',
+    singleton: 'eq.true',
     limit: '1',
   })
   let response
   try {
-    response = await fetch(`${config.url}/rest/v1/staff_profiles?${query}`, {
+    response = await fetch(`${config.url}/rest/v1/main_admin_setup_state?${query}`, {
       headers: {
         apikey: config.secretKey,
         authorization: `Bearer ${config.secretKey}`,
@@ -39,20 +39,57 @@ async function mainAdministratorExists(config) {
     throw error
   }
   if (!response.ok) {
+    const payload = await response.json().catch(() => ({}))
+    const code = typeof payload.code === 'string' ? payload.code : ''
     const error = new Error('Supabase setup-status query failed.')
     error.code = response.status === 401 || response.status === 403
       ? 'SUPABASE_AUTH_FAILED'
-      : 'SUPABASE_QUERY_FAILED'
+      : response.status === 404 || ['42P01', 'PGRST205'].includes(code)
+        ? 'DATABASE_MIGRATION_REQUIRED'
+        : 'SUPABASE_QUERY_FAILED'
     error.status = response.status
     throw error
   }
-  const profiles = await response.json()
-  if (!Array.isArray(profiles)) {
+  const rows = await response.json()
+  if (!Array.isArray(rows) || rows.length !== 1 ||
+      typeof rows[0].setup_completed !== 'boolean') {
     const error = new Error('Supabase returned an invalid setup-status response.')
-    error.code = 'SUPABASE_QUERY_FAILED'
+    error.code = 'DATABASE_MIGRATION_REQUIRED'
     throw error
   }
-  return Array.isArray(profiles) && profiles.length > 0
+  return {
+    completed: rows[0].setup_completed,
+    inProgress: typeof rows[0].setup_claim_id === 'string',
+  }
+}
+
+async function releaseAdministratorSetupClaim(config, claimId) {
+  try {
+    const response = await fetch(`${config.url}/rest/v1/rpc/release_main_system_administrator_setup`, {
+      method: 'POST',
+      headers: {
+        apikey: config.secretKey,
+        authorization: `Bearer ${config.secretKey}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ p_claim_id: claimId }),
+      signal: AbortSignal.timeout(5000),
+    })
+    if (!response.ok) {
+      console.error('Administrator setup claim release failed:', {
+        stage: 'releasing_setup_claim',
+        status: response.status,
+      })
+      return false
+    }
+    return true
+  } catch {
+    console.error('Administrator setup claim release failed:', {
+      stage: 'releasing_setup_claim',
+      status: null,
+    })
+    return false
+  }
 }
 
 function setupKeyIsConfigured() {
@@ -93,6 +130,9 @@ async function setupFailureCode(response, { authService = false, payload = null 
   const message = [payload.message, payload.msg, payload.error, payload.error_description]
     .filter(value => typeof value === 'string')
     .join(' ')
+  if (/setup is closed|setup.*in progress|claim is invalid/i.test(message)) {
+    return 'ADMIN_SETUP_CLOSED'
+  }
   if (authService && (response.status === 401 || response.status === 403)) {
     return 'AUTH_SERVER_KEY_REJECTED'
   }
@@ -116,10 +156,12 @@ async function setupFailureCode(response, { authService = false, payload = null 
 
 function setupFailureMessage(code) {
   switch (code) {
+    case 'ADMIN_SETUP_CLOSED':
+      return 'Initial administrator setup is closed or another authorized setup request is already in progress.'
     case 'AUTH_ACCOUNT_ALREADY_EXISTS':
       return 'An Auth account already uses one of these identifiers. It was not changed or promoted. Ask the operator to verify the existing account before continuing.'
     case 'AUTH_REQUEST_REJECTED':
-      return 'Supabase Auth rejected the submitted account details. Check Auth configuration and whether the email or mobile is already registered.'
+      return 'Supabase Auth rejected the submitted phone or password details. Check Auth configuration and whether this mobile is already registered.'
     case 'AUTH_SERVICE_UNAVAILABLE':
       return 'The backend could not complete the Supabase Auth request. Check backend-to-Supabase connectivity and server logs.'
     case 'AUTH_SERVER_KEY_REJECTED':
@@ -127,7 +169,7 @@ function setupFailureMessage(code) {
     case 'AUTH_CREATION_UNCONFIRMED':
       return 'Supabase did not confirm whether the Auth account was created. Verify the existing account before attempting setup again.'
     case 'DATABASE_MIGRATION_REQUIRED':
-      return 'The administrator database function or required schema is missing. Verify migrations 003–006 before retrying.'
+      return 'The administrator database function or required schema is missing. Verify migrations 003–007 before retrying.'
     case 'DATABASE_PERMISSION_DENIED':
       return 'The database denied the administrator profile operation. Verify the service key and RPC grants; do not disable RLS.'
     case 'DATABASE_PROFILE_CONFLICT':
@@ -159,9 +201,14 @@ router.get('/admin-setup/status', async (_req, res) => {
     })
   }
   try {
-    if (await mainAdministratorExists(config)) {
+    const setup = await mainAdministratorSetupState(config)
+    if (setup.completed) {
       console.info('Admin setup status query completed:', { result: 'closed' })
       return res.status(200).json({ available: false, reason: 'closed' })
+    }
+    if (setup.inProgress) {
+      console.info('Admin setup status query completed:', { result: 'in_progress' })
+      return res.status(200).json({ available: false, reason: 'in_progress' })
     }
     if (!setupKeyIsConfigured()) {
       console.info('Admin setup status query completed:', {
@@ -204,20 +251,16 @@ router.post('/admin-setup', adminSetupLimit, async (req, res) => {
     ? req.body
     : {}
   const fullName = typeof input.fullName === 'string' ? input.fullName.trim() : ''
-  const username = typeof input.username === 'string' ? input.username.trim().toLowerCase() : ''
   const mobile = normalizeIndianMobile(input.mobile)
-  const email = typeof input.email === 'string' ? input.email.trim().toLowerCase() : ''
   const password = typeof input.password === 'string' ? input.password : ''
   const confirmation = typeof input.confirmPassword === 'string' ? input.confirmPassword : ''
 
   if (fullName.length < 2 || fullName.length > 100 ||
-      !/^[a-z0-9_]{3,30}$/.test(username) ||
       !mobile ||
-      email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ||
       password.length < 12 || password.length > 128 ||
       password !== confirmation ||
       typeof input.setupKey !== 'string' || input.setupKey.length === 0) {
-    return res.status(400).json({ message: 'Check the name, username, mobile, email, password, and setup key fields.' })
+    return res.status(400).json({ message: 'Check the full name, 10-digit mobile, matching 12–128 character passwords, and setup key.' })
   }
   if (!setupKeyMatches(input.setupKey)) {
     return res.status(403).json({ message: 'The setup key is invalid or initial setup is closed.' })
@@ -229,22 +272,41 @@ router.post('/admin-setup', adminSetupLimit, async (req, res) => {
   let failureStatus = null
   let authRequestDiagnostic = null
   let authResponseDetails = null
+  const claimId = randomUUID()
+  let claimAcquired = false
   try {
-    if (await mainAdministratorExists(config)) {
+    const setup = await mainAdministratorSetupState(config)
+    if (setup.completed || setup.inProgress) {
       return res.status(409).json({ message: 'Initial administrator setup is closed.' })
     }
+
+    stage = 'claiming_setup'
+    const claimResponse = await fetch(`${config.url}/rest/v1/rpc/claim_main_system_administrator_setup`, {
+      method: 'POST',
+      headers: {
+        apikey: config.secretKey,
+        authorization: `Bearer ${config.secretKey}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ p_claim_id: claimId }),
+      signal: AbortSignal.timeout(10000),
+    })
+    if (!claimResponse.ok) {
+      failureStatus = claimResponse.status
+      failureCode = await setupFailureCode(claimResponse)
+      throw new Error('The database did not accept the setup claim.')
+    }
+    claimAcquired = true
 
     stage = 'creating_auth_user'
     let createResponse
     try {
       const request = await requestAuthAdminUser(config, {
-        email,
-        email_confirm: true,
         phone: mobile,
         phone_confirm: true,
         password,
         app_metadata: { account_type: 'staff' },
-        user_metadata: { full_name: fullName, username },
+        user_metadata: { full_name: fullName },
       })
       createResponse = request.response
       failureStatus = createResponse.status
@@ -270,10 +332,8 @@ router.post('/admin-setup', adminSetupLimit, async (req, res) => {
       authResponseDetails = safeAuthResponseDetails(authErrorPayload, [
         config.secretKey,
         password,
-        email,
         mobile,
         fullName,
-        username,
         input.setupKey,
       ])
       failureCode = await setupFailureCode(createResponse, { authService: true, payload: authErrorPayload })
@@ -290,7 +350,6 @@ router.post('/admin-setup', adminSetupLimit, async (req, res) => {
           supabaseErrorCode: authResponseDetails.code,
           supabaseErrorMessage: authResponseDetails.message,
         })
-        return res.status(409).json({ code: failureCode, message: setupFailureMessage(failureCode) })
       }
       throw new Error('Supabase Auth rejected user creation.')
     }
@@ -311,7 +370,7 @@ router.post('/admin-setup', adminSetupLimit, async (req, res) => {
           authorization: `Bearer ${config.secretKey}`,
           'content-type': 'application/json',
         },
-        body: JSON.stringify({ p_user_id: authUserId, p_full_name: fullName }),
+        body: JSON.stringify({ p_user_id: authUserId, p_full_name: fullName, p_claim_id: claimId }),
         signal: AbortSignal.timeout(10000),
       })
     } catch {
@@ -331,10 +390,11 @@ router.post('/admin-setup', adminSetupLimit, async (req, res) => {
       failureCode = 'AUTH_USER_CREATED_PROFILE_FAILED'
       throw new Error('The bootstrap returned an unexpected profile.')
     }
+    claimAcquired = false
 
     return res.status(201).json({
-      message: 'Main System Administrator created. Sign in through Municipal Staff Login.',
-      loginPath: '/staff-login',
+      message: 'Main System Administrator created. Sign in through Administrator Login.',
+      loginPath: '/admin-login',
     })
   } catch (error) {
     if (authUserId) {
@@ -344,8 +404,8 @@ router.post('/admin-setup', adminSetupLimit, async (req, res) => {
           profile.department_id === null) {
         console.info('Initial administrator profile verified after an interrupted bootstrap response.')
         return res.status(201).json({
-          message: 'Main System Administrator created. Sign in through Municipal Staff Login.',
-          loginPath: '/staff-login',
+          message: 'Main System Administrator created. Sign in through Administrator Login.',
+          loginPath: '/admin-login',
         })
       }
       if (profile) failureCode = 'DATABASE_PROFILE_CONFLICT'
@@ -354,6 +414,12 @@ router.post('/admin-setup', adminSetupLimit, async (req, res) => {
       failureCode = stage === 'creating_auth_user'
         ? 'AUTH_SERVICE_UNAVAILABLE'
         : 'SUPABASE_SERVICE_ERROR'
+    }
+    if (!authUserId && claimAcquired && (
+      ['AUTH_ACCOUNT_ALREADY_EXISTS', 'AUTH_REQUEST_REJECTED', 'AUTH_SERVER_KEY_REJECTED', 'AUTH_REQUEST_CONSTRUCTION_FAILED'].includes(failureCode) ||
+      ['dns', 'tls'].includes(authRequestDiagnostic?.failureType)
+    )) {
+      claimAcquired = !(await releaseAdministratorSetupClaim(config, claimId))
     }
 
     const authCreationState = authUserId
@@ -397,7 +463,14 @@ router.post('/admin-setup', adminSetupLimit, async (req, res) => {
         message: setupFailureMessage(failureCode),
       })
     }
-    return res.status(failureCode === 'AUTH_ACCOUNT_ALREADY_EXISTS' ? 409 : 502).json({
+    const status = ['AUTH_ACCOUNT_ALREADY_EXISTS', 'ADMIN_SETUP_CLOSED', 'DATABASE_PROFILE_CONFLICT'].includes(failureCode)
+      ? 409
+      : failureCode === 'AUTH_REQUEST_REJECTED'
+        ? 400
+        : failureCode === 'AUTH_SERVER_KEY_REJECTED'
+          ? 503
+          : 502
+    return res.status(status).json({
       code: failureCode,
       message: setupFailureMessage(failureCode),
     })

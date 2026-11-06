@@ -291,7 +291,20 @@ function AdminLogin() {
   const [showPassword, setShowPassword] = useState(false)
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
+  const [registrationAvailable, setRegistrationAvailable] = useState(false)
   const navigate = useNavigate()
+
+  useEffect(() => {
+    let active = true
+    getMainAdministratorSetupStatus()
+      .then(result => {
+        if (active) setRegistrationAvailable(result.available === true)
+      })
+      .catch(() => {
+        if (active) setRegistrationAvailable(false)
+      })
+    return () => { active = false }
+  }, [])
 
   async function handleSubmit(event) {
     event.preventDefault()
@@ -367,6 +380,7 @@ function AdminLogin() {
           </button>
           {message && <p className="notice notice-error" role="alert">{message}</p>}
           <p className="form-switch"><Link to="/staff-login">Municipal Staff Login</Link></p>
+          {registrationAvailable && <p className="form-switch"><Link to="/admin-register">Register the first administrator</Link></p>}
         </form>
       </section>
     </Layout>
@@ -377,9 +391,7 @@ function AdminSetup() {
   const [setupState, setSetupState] = useState({ status: 'checking' })
   const [values, setValues] = useState({
     fullName: '',
-    username: '',
     mobile: '',
-    email: '',
     password: '',
     confirmPassword: '',
     setupKey: '',
@@ -408,19 +420,15 @@ function AdminSetup() {
   async function handleSubmit(event) {
     event.preventDefault()
     const name = values.fullName.trim()
-    const username = values.username.trim().toLowerCase()
     const mobile = values.mobile.trim()
-    const email = values.email.trim().toLowerCase()
     if (name.length < 2 || name.length > 100 ||
-        !/^[a-z0-9_]{3,30}$/.test(username) ||
         !/^[6-9][0-9]{9}$/.test(mobile) ||
-        !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ||
         values.password.length < 12 || values.password.length > 128 ||
         values.password !== values.confirmPassword ||
         !values.setupKey) {
       setSetupState({
         status: 'open',
-        message: 'Check the name, username, 10-digit mobile, email, matching 12–128 character passwords, and setup key.',
+        message: 'Check the full name, 10-digit mobile, matching 12–128 character passwords, and setup key.',
       })
       return
     }
@@ -428,11 +436,11 @@ function AdminSetup() {
     setSetupState({ status: 'submitting' })
     try {
       const result = await setupMainAdministrator({
-        ...values,
         fullName: name,
-        username,
         mobile,
-        email,
+        password: values.password,
+        confirmPassword: values.confirmPassword,
+        setupKey: values.setupKey,
       })
       setSetupState({ status: 'success', message: result.message })
     } catch (error) {
@@ -463,8 +471,8 @@ function AdminSetup() {
     <Layout>
       <section className="auth-page">
         <div className="auth-intro">
-          <p className="eyebrow">One-time secure setup</p>
-          <h1>AplaJansevak — Main Administrator Setup</h1>
+          <p className="eyebrow">One-time secure registration</p>
+          <h1>Main System Administrator Registration</h1>
           <p>Creates the first global administrator only. The server and database permanently close setup after that account is created.</p>
           <p><strong>Designation:</strong> Developer / Main System Administrator</p>
         </div>
@@ -481,9 +489,7 @@ function AdminSetup() {
           ) : setupState.status === 'open' ? (
             <form onSubmit={handleSubmit}>
               <label className="field"><span>Full name</span><input autoComplete="name" maxLength={100} value={values.fullName} onChange={event => updateValue('fullName', event.target.value)} required /></label>
-              <label className="field"><span>Username</span><input autoComplete="username" minLength={3} maxLength={30} pattern="[A-Za-z0-9_]{3,30}" value={values.username} onChange={event => updateValue('username', event.target.value)} required /><small className="field-hint">Use 3–30 letters, numbers, or underscores.</small></label>
-              <label className="field"><span>Registered 10-digit mobile number</span><input type="text" inputMode="numeric" autoComplete="tel-national" maxLength={10} pattern="[6-9][0-9]{9}" value={values.mobile} onChange={event => updateValue('mobile', event.target.value)} required /></label>
-              <label className="field"><span>Email address</span><input type="email" autoComplete="email" maxLength={254} value={values.email} onChange={event => updateValue('email', event.target.value)} required /></label>
+              <label className="field"><span>10-digit mobile number</span><input type="text" inputMode="numeric" autoComplete="tel-national" maxLength={10} pattern="[6-9][0-9]{9}" value={values.mobile} onChange={event => updateValue('mobile', event.target.value.replace(/[^0-9]/g, '').slice(0, 10))} required /><small className="field-hint">This will be the administrator login username.</small></label>
               <label className="field"><span>Password</span><span className="password-input-wrap"><input type={showPassword ? 'text' : 'password'} autoComplete="new-password" minLength={12} maxLength={128} value={values.password} onChange={event => updateValue('password', event.target.value)} required /><button className="password-visibility" type="button" onClick={() => setShowPassword(value => !value)} aria-label={showPassword ? 'Hide password' : 'Show password'} aria-pressed={showPassword}>{showPassword ? <EyeOff size={19} /> : <Eye size={19} />}</button></span><small className="field-hint">Use 12–128 characters.</small></label>
               <label className="field"><span>Confirm password</span><span className="password-input-wrap"><input type={showConfirmPassword ? 'text' : 'password'} autoComplete="new-password" minLength={12} maxLength={128} value={values.confirmPassword} onChange={event => updateValue('confirmPassword', event.target.value)} required /><button className="password-visibility" type="button" onClick={() => setShowConfirmPassword(value => !value)} aria-label={showConfirmPassword ? 'Hide confirmation' : 'Show confirmation'} aria-pressed={showConfirmPassword}>{showConfirmPassword ? <EyeOff size={19} /> : <Eye size={19} />}</button></span></label>
               <label className="field"><span>One-time administrator setup key</span><span className="password-input-wrap"><input type={showSetupKey ? 'text' : 'password'} autoComplete="off" minLength={32} value={values.setupKey} onChange={event => updateValue('setupKey', event.target.value)} required /><button className="password-visibility" type="button" onClick={() => setShowSetupKey(value => !value)} aria-label={showSetupKey ? 'Hide setup key' : 'Show setup key'} aria-pressed={showSetupKey}>{showSetupKey ? <EyeOff size={19} /> : <Eye size={19} />}</button></span><small className="field-hint">Enter the key configured privately on the Express server. Never share it in chat.</small></label>
@@ -507,6 +513,8 @@ function AdminSetup() {
                     : 'Setup is unavailable'}</h2>
               <p className="notice notice-error" role="alert">{setupState.status === 'closed'
                 ? setupState.message || 'A Main System Administrator already exists. This page cannot create or promote another account.'
+                : setupState.status === 'in_progress'
+                  ? 'An authorized initial administrator setup is already in progress. Registration is temporarily unavailable.'
                 : setupState.message || 'The backend could not verify initial setup. Check its configuration and logs.'}</p>
               <Link className="button button-secondary" to="/admin-login">Go to Administrator Login</Link>
             </>
@@ -1485,7 +1493,8 @@ function AppRoutes() {
       <Route path="/login" element={<Auth />} />
       <Route path="/staff-login" element={<StaffAuth />} />
       <Route path="/admin-login" element={<AdminLogin />} />
-      <Route path="/admin-setup" element={<AdminSetup />} />
+      <Route path="/admin-register" element={<AdminSetup />} />
+      <Route path="/admin-setup" element={<Navigate to="/admin-register" replace />} />
       <Route path="/staff/dashboard" element={<StaffDashboard />} />
       <Route path="/admin-dashboard" element={<StaffDashboard administratorOnly />} />
       <Route path="/staff/management" element={<StaffManagement />} />

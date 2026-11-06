@@ -1,6 +1,7 @@
 import 'dotenv/config'
 import { createInterface } from 'node:readline/promises'
 import { stdin, stdout } from 'node:process'
+import { randomUUID } from 'node:crypto'
 import { normalizeIndianMobile, staffAuthConfig } from '../src/lib/staffAuth.js'
 
 let ignoreLineFeed = false
@@ -62,7 +63,9 @@ async function supabaseRequest(config, path, body, method = 'POST') {
   })
   const data = await response.json().catch(() => null)
   if (!response.ok) {
-    throw new Error(`Supabase request failed (${response.status}).`)
+    const error = new Error(`Supabase request failed (${response.status}).`)
+    error.status = response.status
+    throw error
   }
   return data
 }
@@ -95,43 +98,47 @@ async function main() {
     throw new Error('Passwords must match and be between 12 and 128 characters.')
   }
 
-  const authUser = await supabaseRequest(config, '/auth/v1/admin/users', {
-    phone: mobile,
-    phone_confirm: true,
-    password,
-    app_metadata: { account_type: 'staff' },
+  const claimId = randomUUID()
+  await supabaseRequest(config, '/rest/v1/rpc/claim_main_system_administrator_setup', {
+    p_claim_id: claimId,
   })
 
-  if (!authUser?.id) throw new Error('Supabase Auth did not return a user ID; no profile was created.')
-
+  let authUser
   try {
-    const profile = await supabaseRequest(config, '/rest/v1/rpc/bootstrap_main_system_administrator', {
-      p_user_id: authUser.id,
-      p_full_name: fullName,
+    authUser = await supabaseRequest(config, '/auth/v1/admin/users', {
+      phone: mobile,
+      phone_confirm: true,
+      password,
+      app_metadata: { account_type: 'staff' },
+      user_metadata: { full_name: fullName },
     })
-    if (profile?.user_id !== authUser.id ||
-        profile.department_id !== null ||
-        profile.role !== 'administrator' ||
-        profile.is_main_system_admin !== true) {
-      throw new Error('The bootstrap RPC returned an unexpected administrator profile.')
-    }
   } catch (error) {
-    try {
-      await supabaseRequest(
-        config,
-        `/auth/v1/admin/users/${encodeURIComponent(authUser.id)}`,
-        undefined,
-        'DELETE',
-      )
-    } catch {
-      throw new Error(`Bootstrap failed and cleanup of the newly created Auth account failed. Review Auth user ${authUser.id} before retrying.`)
+    if (Number.isInteger(error.status) && error.status < 500) {
+      await supabaseRequest(config, '/rest/v1/rpc/release_main_system_administrator_setup', {
+        p_claim_id: claimId,
+      })
     }
-    throw new Error(`Bootstrap failed; the newly created Auth account was removed. ${error.message}`)
+    throw error
+  }
+  if (!authUser?.id) {
+    throw new Error('Supabase Auth did not return a user ID. Setup remains claimed for operator review; do not retry or create another account.')
+  }
+
+  const profile = await supabaseRequest(config, '/rest/v1/rpc/bootstrap_main_system_administrator', {
+    p_user_id: authUser.id,
+    p_full_name: fullName,
+    p_claim_id: claimId,
+  })
+  if (profile?.user_id !== authUser.id ||
+      profile.department_id !== null ||
+      profile.role !== 'administrator' ||
+      profile.is_main_system_admin !== true) {
+    throw new Error('The bootstrap RPC returned an unexpected profile. The Auth account was preserved; request operator review.')
   }
 
   console.log('Global Main System Administrator created successfully. The phone is confirmed; no SMS was sent.')
-  console.log(`Auth UUID: ${authUser.id}; department: Not applicable; ward scope: all wards.`)
-  console.log('Sign in at /staff-login using the 10-digit mobile number and password entered during setup.')
+  console.log('Department: Not applicable; ward scope: all wards.')
+  console.log('Sign in at /admin-login using the 10-digit mobile number and password entered during setup.')
 }
 
 main().catch(error => {
