@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { BrowserRouter, Link, Navigate, Route, Routes, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { ArrowRight, CheckCircle2, Eye, EyeOff, ImagePlus, LogIn, MapPin, RefreshCw, Search, ShieldCheck, UserPlus } from 'lucide-react'
-import { getCitizenIdentity, registerCitizen, signInCitizen, signInStaff } from './lib/auth'
+import { getCitizenIdentity, getMainAdministratorSetupStatus, registerCitizen, setupMainAdministrator, signInCitizen, signInStaff } from './lib/auth'
 import { complaintCategories, getComplaint, submitComplaint } from './lib/complaints'
 import { createAdminDepartment, createStaffAccount, createStaffDesignation, deleteAdminSystemSetting, getAdminAuditLogs, getAdminDashboard, getAdminDepartments, getAdminDesignations, getAdminStaff, getAdminSystemSettings, getAdminWards, getStaffDashboard, saveAdminSystemSetting, setAdminStaffPassword, setStaffAccountActive, setStaffDesignationActive, takeComplaintAction, updateAdminDepartment, updateStaffAccount, updateStaffDesignation } from './lib/staffManagement'
 import { isSupabaseConfigured, requireSupabase } from './lib/supabaseClient'
@@ -277,6 +277,131 @@ function StaffAuth() {
           {showRecoveryHelp && <p className="notice" role="status">For security, staff password resets are handled by the Main System Administrator. Contact your authorized administrator; they can set a new password from Staff Management.</p>}
           {message && <p className="notice notice-error" role="alert">{message}</p>}
         </form>
+      </section>
+    </Layout>
+  )
+}
+
+function AdminSetup() {
+  const [setupState, setSetupState] = useState({ status: 'checking' })
+  const [values, setValues] = useState({
+    fullName: '',
+    username: '',
+    mobile: '',
+    email: '',
+    password: '',
+    confirmPassword: '',
+    setupKey: '',
+  })
+  const [showPassword, setShowPassword] = useState(false)
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false)
+  const [showSetupKey, setShowSetupKey] = useState(false)
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    let active = true
+    getMainAdministratorSetupStatus()
+      .then(result => {
+        if (active) setSetupState({ status: result.available ? 'open' : result.reason || 'closed' })
+      })
+      .catch(error => {
+        if (active) setSetupState({ status: 'unavailable', message: error.message })
+      })
+    return () => { active = false }
+  }, [])
+
+  function updateValue(field, value) {
+    setValues(current => ({ ...current, [field]: value }))
+  }
+
+  async function handleSubmit(event) {
+    event.preventDefault()
+    const name = values.fullName.trim()
+    const username = values.username.trim().toLowerCase()
+    const mobile = values.mobile.trim()
+    const email = values.email.trim().toLowerCase()
+    if (name.length < 2 || name.length > 100 ||
+        !/^[a-z0-9_]{3,30}$/.test(username) ||
+        !/^[6-9][0-9]{9}$/.test(mobile) ||
+        !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ||
+        values.password.length < 12 || values.password.length > 128 ||
+        values.password !== values.confirmPassword ||
+        !values.setupKey) {
+      setSetupState({
+        status: 'open',
+        message: 'Check the name, username, 10-digit mobile, email, matching 12–128 character passwords, and setup key.',
+      })
+      return
+    }
+    setBusy(true)
+    setSetupState({ status: 'submitting' })
+    try {
+      const result = await setupMainAdministrator({
+        ...values,
+        fullName: name,
+        username,
+        mobile,
+        email,
+      })
+      setSetupState({ status: 'success', message: result.message })
+    } catch (error) {
+      let status = error.status === 409 ? 'closed' : 'open'
+      try {
+        const latest = await getMainAdministratorSetupStatus()
+        if (!latest.available) status = latest.reason || 'closed'
+      } catch {
+        // Keep the original setup error visible if the status check also fails.
+      }
+      setSetupState({
+        status,
+        message: error.message || 'Unable to complete setup.',
+      })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Layout>
+      <section className="auth-page">
+        <div className="auth-intro">
+          <p className="eyebrow">One-time secure setup</p>
+          <h1>AplaJansevak — Main Administrator Setup</h1>
+          <p>Creates the first global administrator only. The server and database permanently close setup after that account is created.</p>
+          <p><strong>Designation:</strong> Developer / Main System Administrator</p>
+        </div>
+        <div className="form-card">
+          {setupState.status === 'checking' || setupState.status === 'submitting' ? (
+            <LoadingPage text={setupState.status === 'checking' ? 'Checking secure setup status…' : 'Creating the first administrator…'} />
+          ) : setupState.status === 'success' ? (
+            <>
+              <h2>Initial setup complete</h2>
+              <p className="notice notice-success" role="status">{setupState.message}</p>
+              <p>Administrator registration is now closed. Sign in with the mobile number and password you just registered.</p>
+              <Link className="button button-primary form-submit" to="/staff-login">Go to Municipal Staff Login <ArrowRight size={18} /></Link>
+            </>
+          ) : setupState.status === 'open' ? (
+            <form onSubmit={handleSubmit}>
+              <label className="field"><span>Full name</span><input autoComplete="name" maxLength={100} value={values.fullName} onChange={event => updateValue('fullName', event.target.value)} required /></label>
+              <label className="field"><span>Username</span><input autoComplete="username" minLength={3} maxLength={30} pattern="[A-Za-z0-9_]{3,30}" value={values.username} onChange={event => updateValue('username', event.target.value)} required /><small className="field-hint">Use 3–30 letters, numbers, or underscores.</small></label>
+              <label className="field"><span>Registered 10-digit mobile number</span><input type="text" inputMode="numeric" autoComplete="tel-national" maxLength={10} pattern="[6-9][0-9]{9}" value={values.mobile} onChange={event => updateValue('mobile', event.target.value)} required /></label>
+              <label className="field"><span>Email address</span><input type="email" autoComplete="email" maxLength={254} value={values.email} onChange={event => updateValue('email', event.target.value)} required /></label>
+              <label className="field"><span>Password</span><span className="password-input-wrap"><input type={showPassword ? 'text' : 'password'} autoComplete="new-password" minLength={12} maxLength={128} value={values.password} onChange={event => updateValue('password', event.target.value)} required /><button className="password-visibility" type="button" onClick={() => setShowPassword(value => !value)} aria-label={showPassword ? 'Hide password' : 'Show password'} aria-pressed={showPassword}>{showPassword ? <EyeOff size={19} /> : <Eye size={19} />}</button></span><small className="field-hint">Use 12–128 characters.</small></label>
+              <label className="field"><span>Confirm password</span><span className="password-input-wrap"><input type={showConfirmPassword ? 'text' : 'password'} autoComplete="new-password" minLength={12} maxLength={128} value={values.confirmPassword} onChange={event => updateValue('confirmPassword', event.target.value)} required /><button className="password-visibility" type="button" onClick={() => setShowConfirmPassword(value => !value)} aria-label={showConfirmPassword ? 'Hide confirmation' : 'Show confirmation'} aria-pressed={showConfirmPassword}>{showConfirmPassword ? <EyeOff size={19} /> : <Eye size={19} />}</button></span></label>
+              <label className="field"><span>One-time administrator setup key</span><span className="password-input-wrap"><input type={showSetupKey ? 'text' : 'password'} autoComplete="off" minLength={32} value={values.setupKey} onChange={event => updateValue('setupKey', event.target.value)} required /><button className="password-visibility" type="button" onClick={() => setShowSetupKey(value => !value)} aria-label={showSetupKey ? 'Hide setup key' : 'Show setup key'} aria-pressed={showSetupKey}>{showSetupKey ? <EyeOff size={19} /> : <Eye size={19} />}</button></span><small className="field-hint">Enter the key configured privately on the Express server. Never share it in chat.</small></label>
+              {setupState.message && <p className="notice notice-error" role="alert">{setupState.message}</p>}
+              <button className="button button-primary form-submit" type="submit" disabled={busy}>Create Main System Administrator <ArrowRight size={18} /></button>
+            </form>
+          ) : (
+            <>
+              <h2>{setupState.status === 'closed' ? 'Initial setup is closed' : 'Setup is unavailable'}</h2>
+              <p className="notice notice-error" role="alert">{setupState.status === 'closed'
+                ? setupState.message || 'A Main System Administrator already exists. This page cannot create or promote another account.'
+                : setupState.message || 'The server has not enabled one-time setup or could not verify its status.'}</p>
+              <Link className="button button-secondary" to="/staff-login">Go to Municipal Staff Login</Link>
+            </>
+          )}
+        </div>
       </section>
     </Layout>
   )
@@ -1230,6 +1355,7 @@ function AppRoutes() {
       <Route path="/register" element={<Auth register />} />
       <Route path="/login" element={<Auth />} />
       <Route path="/staff-login" element={<StaffAuth />} />
+      <Route path="/admin-setup" element={<AdminSetup />} />
       <Route path="/staff/dashboard" element={<StaffDashboard />} />
       <Route path="/admin-dashboard" element={<StaffDashboard administratorOnly />} />
       <Route path="/staff/management" element={<StaffManagement />} />

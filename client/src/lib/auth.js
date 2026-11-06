@@ -138,3 +138,37 @@ export async function signInStaff({ mobile, password }) {
   if (error) throw new Error('Unable to establish your secure session.')
   return data
 }
+
+export async function getMainAdministratorSetupStatus() {
+  let response
+  try {
+    response = await fetch(`${apiUrl}/api/staff-auth/admin-setup/status`)
+  } catch (error) {
+    throw withRequestContext(error, 'checking initial administrator setup')
+  }
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    throw new Error(data.message || 'Unable to check initial administrator setup.')
+  }
+  return data
+}
+
+export async function setupMainAdministrator(values) {
+  let response
+  try {
+    response = await fetch(`${apiUrl}/api/staff-auth/admin-setup`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(values),
+    })
+  } catch (error) {
+    throw withRequestContext(error, 'creating the Main System Administrator')
+  }
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    const error = new Error(data.message || 'Unable to complete initial administrator setup.')
+    error.status = response.status
+    throw error
+  }
+  return data
+}
