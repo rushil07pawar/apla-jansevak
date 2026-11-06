@@ -451,13 +451,32 @@ async function loginStaff(req, res, { administratorOnly = false } = {}) {
       },
     })
   } catch (error) {
+    if (error.diagnostic) {
+      console.error('Staff password authentication failed:', {
+        reason: error.code,
+        ...error.diagnostic,
+      })
+    }
+    if (error.status === 429) {
+      return res.status(429).json({ message: error.message })
+    }
     if (error.status === 503) {
       return res.status(503).json({ message: error.message })
     }
     if (error instanceof TypeError) {
+      console.error('Staff authorization verification failed:', {
+        stage: 'verifying_staff_profile_and_permissions',
+        reason: 'STAFF_AUTHORIZATION_NETWORK_FAILURE',
+        failureType: 'network',
+        exceptionName: error.name,
+        status: null,
+      })
       return res.status(503).json({ message: 'Could not reach Supabase to verify staff login. Check the server connection and try again.' })
     }
-    console.error('Staff login authorization failed:', error.message)
+    console.error('Staff login authorization failed:', {
+      exceptionName: error.name || 'Error',
+      status: Number.isInteger(error.status) ? error.status : null,
+    })
     return res.status(500).json({ message: 'Unable to verify staff access right now. Please try again later.' })
   }
 }

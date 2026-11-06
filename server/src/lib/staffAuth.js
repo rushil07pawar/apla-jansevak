@@ -67,19 +67,120 @@ async function supabaseRequest(config, path, options = {}) {
   return fetch(`${config.url}${path}`, options)
 }
 
-export async function passwordSession(config, mobile, password) {
-  const response = await supabaseRequest(config, '/auth/v1/token?grant_type=password', {
-    method: 'POST',
-    headers: { apikey: config.publishableKey, 'content-type': 'application/json' },
-    body: JSON.stringify({ phone: mobile, password }),
-  })
-  if (response.status === 400 || response.status === 401) return null
-  if (!response.ok) {
-    const error = new Error('The staff authentication service is temporarily unavailable.')
-    error.status = 503
-    throw error
+function sanitizedAuthMessage(value, config, mobile, password) {
+  let message = typeof value === 'string' ? value : ''
+  for (const sensitiveValue of [config.publishableKey, config.secretKey, mobile, mobile.replace(/^\+91/, ''), password]) {
+    if (sensitiveValue) message = message.replaceAll(sensitiveValue, '[redacted]')
   }
-  return response.json()
+  return message
+    .replace(/Bearer\s+\S+/gi, 'Bearer [redacted]')
+    .replace(/\+?91[\s().-]*[6-9](?:[\s().-]*\d){9}\b/g, '[redacted-mobile]')
+    .replace(/\b[6-9]\d{9}\b/g, '[redacted-mobile]')
+    .replace(/\beyJ[A-Za-z0-9._-]+/g, '[redacted-token]')
+    .replace(/[\r\n\t]+/g, ' ')
+    .slice(0, 240)
+}
+
+function authFailure(status, code, message, diagnostic = {}) {
+  const error = new Error(message)
+  error.status = status
+  error.code = code
+  error.diagnostic = diagnostic
+  return error
+}
+
+export async function passwordSession(config, mobile, password, { fetchImpl = fetch } = {}) {
+  let response
+  try {
+    response = await fetchImpl(`${config.url}/auth/v1/token?grant_type=password`, {
+      method: 'POST',
+      headers: { apikey: config.publishableKey, 'content-type': 'application/json' },
+      body: JSON.stringify({ phone: mobile, password }),
+      signal: AbortSignal.timeout(10000),
+    })
+  } catch (error) {
+    const cause = error?.cause
+    const causeCode = cause?.code || error?.code || null
+    const name = error?.name || 'Error'
+    const failureType = name === 'TimeoutError' || name === 'AbortError' ||
+      ['ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT'].includes(causeCode)
+      ? 'timeout'
+      : ['ENOTFOUND', 'EAI_AGAIN', 'ENODATA'].includes(causeCode)
+        ? 'dns'
+        : /certificate|tls|ssl/i.test(`${error?.message || ''} ${cause?.message || ''}`)
+          ? 'tls'
+          : 'network'
+    throw authFailure(
+      503,
+      'SUPABASE_AUTH_NETWORK_FAILURE',
+      'Could not reach Supabase Auth. Try again later.',
+      {
+        failureType,
+        exceptionName: name,
+        exceptionMessage: sanitizedAuthMessage(error?.message, config, mobile, password),
+        causeName: cause?.name || null,
+        causeCode: causeCode && /^[A-Z0-9_]+$/i.test(causeCode) ? causeCode : null,
+        requestInitiated: true,
+        httpResponseReceived: false,
+        status: null,
+        host: new URL(config.url).hostname,
+        path: '/auth/v1/token',
+      },
+    )
+  }
+
+  const payload = await response.json().catch(() => ({}))
+  const rawCode = typeof payload.error_code === 'string'
+    ? payload.error_code
+    : typeof payload.code === 'string'
+      ? payload.code
+      : typeof payload.error === 'string'
+        ? payload.error
+        : ''
+  const safeCode = sanitizedAuthMessage(rawCode, config, mobile, password)
+  const errorCode = /^[a-z0-9_.-]{1,100}$/i.test(safeCode) ? safeCode : null
+  const rawMessage = [payload.msg, payload.message, payload.error_description]
+    .find(value => typeof value === 'string')
+  const errorMessage = sanitizedAuthMessage(rawMessage, config, mobile, password)
+  const diagnostic = {
+    failureType: 'http',
+    requestInitiated: true,
+    httpResponseReceived: true,
+    status: response.status,
+    host: new URL(config.url).hostname,
+    path: '/auth/v1/token',
+    supabaseErrorCode: errorCode,
+    supabaseErrorMessage: errorMessage || null,
+  }
+
+  if (response.ok) {
+    if (typeof payload?.access_token !== 'string' || typeof payload?.user?.id !== 'string') {
+      throw authFailure(
+        503,
+        'SUPABASE_AUTH_UNEXPECTED_RESPONSE',
+        'Supabase Auth returned an unexpected response. Try again later.',
+        diagnostic,
+      )
+    }
+    return payload
+  }
+  if (response.status === 400 || response.status === 401) {
+    if (['invalid_api_key', 'no_api_key', 'unauthorized', 'invalid_key'].includes(errorCode?.toLowerCase())) {
+      throw authFailure(503, 'SUPABASE_AUTH_CONFIGURATION', 'Supabase Auth rejected its configured API key.', diagnostic)
+    }
+    console.warn('Supabase password authentication rejected:', diagnostic)
+    return null
+  }
+  if (response.status === 403) {
+    throw authFailure(503, 'SUPABASE_AUTH_CONFIGURATION', 'Supabase Auth rejected its configured API key or project access.', diagnostic)
+  }
+  if (response.status === 429) {
+    throw authFailure(429, 'SUPABASE_AUTH_RATE_LIMITED', 'Too many sign-in attempts. Please wait before trying again.', diagnostic)
+  }
+  if (response.status >= 500) {
+    throw authFailure(503, 'SUPABASE_AUTH_UPSTREAM_FAILURE', 'Supabase Auth is temporarily unavailable. Try again later.', diagnostic)
+  }
+  throw authFailure(503, 'SUPABASE_AUTH_UNEXPECTED_RESPONSE', 'Supabase Auth returned an unexpected response. Try again later.', diagnostic)
 }
 
 export async function activeStaff(config, userId, mobile) {
