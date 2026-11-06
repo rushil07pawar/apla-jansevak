@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { test } from 'node:test'
 import { createApp } from '../src/app.js'
+import { passwordSession } from '../src/lib/staffAuth.js'
 
 test('email-session verification grants access only to Main System Administrators', async () => {
   const originalFetch = globalThis.fetch
@@ -128,6 +129,23 @@ test('email-session verification grants access only to Main System Administrator
       else process.env[key] = value
     }
   }
+})
+
+test('passwordSession handles missing mobile values without crashing during redaction', async () => {
+  const config = {
+    url: 'https://project-ref.supabase.co',
+    publishableKey: 'test-publishable-key',
+    secretKey: 'test-server-secret',
+  }
+
+  const response = await passwordSession(config, null, 'test-only-password', {
+    fetchImpl: async () => new Response(JSON.stringify({
+      code: 'invalid_credentials',
+      msg: 'Invalid credentials for +919876543210 and test-only-password',
+    }), { status: 400 }),
+  })
+
+  assert.equal(response, null)
 })
 
 test('administrator identity network failures are logged safely and return an unavailable response', async () => {

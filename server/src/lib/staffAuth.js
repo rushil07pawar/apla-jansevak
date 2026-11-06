@@ -68,9 +68,19 @@ async function supabaseRequest(config, path, options = {}) {
 }
 
 function sanitizedAuthMessage(value, config, mobile, password) {
+  const mobileDigits = typeof mobile === 'string' ? mobile : ''
+  const passwordValue = typeof password === 'string' ? password : ''
   let message = typeof value === 'string' ? value : ''
-  for (const sensitiveValue of [config.publishableKey, config.secretKey, mobile, mobile.replace(/^\+91/, ''), password]) {
-    if (sensitiveValue) message = message.replaceAll(sensitiveValue, '[redacted]')
+  for (const sensitiveValue of [
+    config?.publishableKey,
+    config?.secretKey,
+    mobileDigits,
+    mobileDigits.replace(/^\+91/, ''),
+    passwordValue,
+  ]) {
+    if (typeof sensitiveValue === 'string' && sensitiveValue.length > 0) {
+      message = message.replaceAll(sensitiveValue, '[redacted]')
+    }
   }
   return message
     .replace(/Bearer\s+\S+/gi, 'Bearer [redacted]')
