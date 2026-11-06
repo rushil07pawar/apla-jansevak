@@ -404,19 +404,29 @@ router.post('/admin-setup', adminSetupLimit, async (req, res) => {
   }
 })
 
-router.post('/login', loginLimit, async (req, res) => {
+async function loginStaff(req, res, { administratorOnly = false } = {}) {
   const mobile = normalizeIndianMobile(req.body?.mobile)
   const password = typeof req.body?.password === 'string' ? req.body.password : ''
   const config = staffAuthConfig()
-  if (!mobile) return res.status(400).json(invalidMobile)
+  if (!mobile) return res.status(400).json(administratorOnly ? genericFailure : invalidMobile)
   if (!password) return res.status(400).json({ message: 'Enter your password.' })
   if (!config) return res.status(503).json({ message: 'Staff login is not configured. Contact the system administrator.' })
   try {
     const session = await passwordSession(config, mobile, password)
     if (!session) return res.status(401).json(genericFailure)
     const access = await authorizeStaffLogin(config, session.user.id, mobile)
-    if (!access.authorized) return res.status(access.status).json({ message: access.message })
+    if (!access.authorized) {
+      return administratorOnly
+        ? res.status(access.status === 503 ? 503 : 401).json(genericFailure)
+        : res.status(access.status).json({ message: access.message })
+    }
     const { staff } = access
+    if (administratorOnly &&
+        (staff.role !== 'administrator' ||
+         staff.is_main_system_admin !== true ||
+         staff.isMainAdministrator !== true)) {
+      return res.status(401).json(genericFailure)
+    }
     return res.status(200).json({
       session: {
         access_token: session.access_token,
@@ -450,6 +460,9 @@ router.post('/login', loginLimit, async (req, res) => {
     console.error('Staff login authorization failed:', error.message)
     return res.status(500).json({ message: 'Unable to verify staff access right now. Please try again later.' })
   }
-})
+}
+
+router.post('/login', loginLimit, (req, res) => loginStaff(req, res))
+router.post('/admin-login', loginLimit, (req, res) => loginStaff(req, res, { administratorOnly: true }))
 
 export default router

@@ -115,10 +115,10 @@ export async function signInCitizen({ email, password }) {
   return { ...data, ...identity }
 }
 
-export async function signInStaff({ mobile, password }) {
+async function signInStaffWithEndpoint({ mobile, password, endpoint, administratorOnly = false }) {
   let response
   try {
-    response = await fetch(`${requireApiUrl()}/api/staff-auth/login`, {
+    response = await fetch(`${requireApiUrl()}${endpoint}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ mobile, password }),
@@ -132,10 +132,31 @@ export async function signInStaff({ mobile, password }) {
   const data = await response.json().catch(() => ({}))
   if (!response.ok) throw new Error(data.message || 'Unable to sign in with those credentials.')
   if (!data.session || !data.staff) throw new Error('Unable to verify this staff session.')
+  if (administratorOnly &&
+      (data.staff.role !== 'administrator' || data.staff.is_main_system_admin !== true)) {
+    throw new Error('Unable to sign in with those credentials.')
+  }
 
   const { error } = await requireSupabase().auth.setSession(data.session)
   if (error) throw new Error('Unable to establish your secure session.')
   return data
+}
+
+export function signInStaff({ mobile, password }) {
+  return signInStaffWithEndpoint({
+    mobile,
+    password,
+    endpoint: '/api/staff-auth/login',
+  })
+}
+
+export function signInMainAdministrator({ username, password }) {
+  return signInStaffWithEndpoint({
+    mobile: username,
+    password,
+    endpoint: '/api/staff-auth/admin-login',
+    administratorOnly: true,
+  })
 }
 
 export async function getMainAdministratorSetupStatus() {

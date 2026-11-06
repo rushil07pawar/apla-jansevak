@@ -318,6 +318,23 @@
   border-color: #cbdcd2;
 }
 
+.staff-access-actions {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+}
+
+.admin-login-link {
+  color: #42675b;
+  font-size: 13px;
+  font-weight: 600;
+  text-underline-offset: 3px;
+}
+
+.admin-login-link:hover {
+  color: var(--green-dark);
+}
+
 .site-footer {
   color: #d9e8e1;
   background: #123f38;
@@ -741,6 +758,46 @@
   margin-bottom: 8px;
 }
 
+.admin-console-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+  margin: 24px 0;
+  padding: 18px;
+  background: #f3f7f4;
+  border: 1px solid #e4ece7;
+  border-radius: 12px;
+}
+
+.admin-console-nav a {
+  display: inline-flex;
+  min-height: 40px;
+  align-items: center;
+  padding: 8px 12px;
+  color: var(--green-dark);
+  background: #fff;
+  border: 1px solid #cbdcd2;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.admin-console-nav a:hover {
+  border-color: var(--green);
+  background: #f8fbf8;
+}
+
+#admin-overview,
+#all-complaints,
+#admin-reports,
+#staff-management,
+#department-management,
+#ward-management,
+#user-management {
+  scroll-margin-top: 24px;
+}
+
 @media (max-width: 820px) {
   .hero-content {
     padding-right: 28px;
@@ -881,6 +938,10 @@
   }
 
   .staff-access .button {
+    width: 100%;
+  }
+
+  .staff-access-actions {
     width: 100%;
   }
 

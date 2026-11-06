@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { BrowserRouter, Link, Navigate, Route, Routes, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { ArrowRight, CheckCircle2, Eye, EyeOff, ImagePlus, LogIn, MapPin, RefreshCw, Search, ShieldCheck, UserPlus } from 'lucide-react'
-import { getCitizenIdentity, getMainAdministratorSetupStatus, registerCitizen, setupMainAdministrator, signInCitizen, signInStaff } from './lib/auth'
+import { getCitizenIdentity, getMainAdministratorSetupStatus, registerCitizen, setupMainAdministrator, signInCitizen, signInMainAdministrator, signInStaff } from './lib/auth'
 import { complaintCategories, getComplaint, submitComplaint } from './lib/complaints'
 import { createAdminDepartment, createStaffAccount, createStaffDesignation, deleteAdminSystemSetting, getAdminAuditLogs, getAdminDashboard, getAdminDepartments, getAdminDesignations, getAdminStaff, getAdminSystemSettings, getAdminWards, getStaffDashboard, saveAdminSystemSetting, setAdminStaffPassword, setStaffAccountActive, setStaffDesignationActive, takeComplaintAction, updateAdminDepartment, updateStaffAccount, updateStaffDesignation } from './lib/staffManagement'
 import { isSupabaseConfigured, requireSupabase } from './lib/supabaseClient'
@@ -90,7 +90,10 @@ function Home() {
           <h2 id="staff-access-title">Municipal Staff Access</h2>
           <p>For authorized municipal officers and department staff.</p>
         </div>
-        <Link className="button button-staff" to="/staff-login">Staff Login <LogIn size={18} /></Link>
+        <div className="staff-access-actions">
+          <Link className="button button-staff" to="/staff-login">Staff Login <LogIn size={18} /></Link>
+          <Link className="admin-login-link" to="/admin-login">Administrator Login</Link>
+        </div>
       </section>
     </Layout>
   )
@@ -282,6 +285,94 @@ function StaffAuth() {
   )
 }
 
+function AdminLogin() {
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
+  const [message, setMessage] = useState('')
+  const [busy, setBusy] = useState(false)
+  const navigate = useNavigate()
+
+  async function handleSubmit(event) {
+    event.preventDefault()
+    setMessage('')
+    if (!/^[6-9][0-9]{9}$/.test(username)) {
+      setMessage('Enter your registered username as exactly 10 digits.')
+      return
+    }
+    if (!password) {
+      setMessage('Enter your password.')
+      return
+    }
+
+    setBusy(true)
+    try {
+      await signInMainAdministrator({ username, password })
+      navigate('/admin-dashboard', { replace: true })
+    } catch (error) {
+      setMessage(error.message || 'Unable to sign in with those credentials.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Layout>
+      <section className="auth-page admin-login-page">
+        <div className="auth-intro">
+          <p className="eyebrow">Secure administrator access</p>
+          <h1>Main System Administrator Login</h1>
+          <p>Sign in using the 10-digit mobile username and password registered for the Main System Administrator.</p>
+        </div>
+        <form className="form-card" onSubmit={handleSubmit} noValidate>
+          <label className="field">
+            <span>Username (10-digit mobile number)</span>
+            <input
+              type="text"
+              inputMode="numeric"
+              autoComplete="username"
+              placeholder="9876543210"
+              pattern="[6-9][0-9]{9}"
+              maxLength={10}
+              value={username}
+              onChange={event => setUsername(event.target.value.replace(/[^0-9]/g, '').slice(0, 10))}
+              aria-invalid={Boolean(username) && !/^[6-9][0-9]{0,9}$/.test(username)}
+              required
+            />
+            <small className="field-hint">Enter exactly 10 digits, without +91, spaces, or symbols.</small>
+          </label>
+          <label className="field">
+            <span>Password</span>
+            <span className="password-input-wrap">
+              <input
+                type={showPassword ? 'text' : 'password'}
+                autoComplete="current-password"
+                value={password}
+                onChange={event => setPassword(event.target.value)}
+                required
+              />
+              <button
+                className="password-visibility"
+                type="button"
+                onClick={() => setShowPassword(value => !value)}
+                aria-label={showPassword ? 'Hide password' : 'Show password'}
+                aria-pressed={showPassword}
+              >
+                {showPassword ? <EyeOff size={19} /> : <Eye size={19} />}
+              </button>
+            </span>
+          </label>
+          <button className="button button-primary form-submit" type="submit" disabled={busy || !username || !password}>
+            {busy ? 'Please wait…' : 'Administrator Login'} <ArrowRight size={18} />
+          </button>
+          {message && <p className="notice notice-error" role="alert">{message}</p>}
+          <p className="form-switch"><Link to="/staff-login">Municipal Staff Login</Link></p>
+        </form>
+      </section>
+    </Layout>
+  )
+}
+
 function AdminSetup() {
   const [setupState, setSetupState] = useState({ status: 'checking' })
   const [values, setValues] = useState({
@@ -385,7 +476,7 @@ function AdminSetup() {
               <h2>Initial setup complete</h2>
               <p className="notice notice-success" role="status">{setupState.message}</p>
               <p>Administrator registration is now closed. Sign in with the mobile number and password you just registered.</p>
-              <Link className="button button-primary form-submit" to="/staff-login">Go to Municipal Staff Login <ArrowRight size={18} /></Link>
+              <Link className="button button-primary form-submit" to="/admin-login">Go to Administrator Login <ArrowRight size={18} /></Link>
             </>
           ) : setupState.status === 'open' ? (
             <form onSubmit={handleSubmit}>
@@ -417,7 +508,7 @@ function AdminSetup() {
               <p className="notice notice-error" role="alert">{setupState.status === 'closed'
                 ? setupState.message || 'A Main System Administrator already exists. This page cannot create or promote another account.'
                 : setupState.message || 'The backend could not verify initial setup. Check its configuration and logs.'}</p>
-              <Link className="button button-secondary" to="/staff-login">Go to Municipal Staff Login</Link>
+              <Link className="button button-secondary" to="/admin-login">Go to Administrator Login</Link>
             </>
           )}
         </div>
@@ -818,7 +909,18 @@ function StaffDashboard({ administratorOnly = false }) {
         <p>{administratorOnly
           ? 'Global access to departments, wards, complaints, and staff administration is verified by the server and database.'
           : 'Complaint records are limited by your active department, ward, and database-authorized permissions.'}</p>
-        <dl className="details-list">
+        {administratorOnly && <nav className="admin-console-nav" aria-label="Administrator sections">
+          <a href="#admin-overview">Overview</a>
+          <a href="#all-complaints">All Complaints</a>
+          <Link to="/staff/management?section=directory#staff-management">Staff Management</Link>
+          <Link to="/staff/management?section=directory#department-management">Department Management</Link>
+          <Link to="/staff/management?section=directory#ward-management">Ward Management</Link>
+          <a href="#admin-reports">Reports and Analytics</a>
+          <Link to="/staff/management?section=directory#user-management">User Management</Link>
+          <Link to="/staff/management?section=audit">Audit Logs</Link>
+          <Link to="/staff/management?section=settings">System Settings</Link>
+        </nav>}
+        <dl className="details-list" id={administratorOnly ? 'admin-overview' : undefined}>
           <div><dt>Staff member</dt><dd>{state.staff.full_name_mr || state.staff.full_name_en || state.staff.staff_id || 'Municipal staff'}</dd></div>
           <div><dt>Role</dt><dd>{state.staff.is_main_system_admin ? 'Main System Administrator' : STAFF_ROLE_LABELS[state.staff.role] || state.staff.role}</dd></div>
           <div><dt>Designation</dt><dd>{state.staff.designation_mr || state.staff.designation_en || 'Not recorded'}</dd></div>
@@ -826,7 +928,7 @@ function StaffDashboard({ administratorOnly = false }) {
           <div><dt>Authorized wards</dt><dd>{state.staff.is_main_system_admin ? 'All wards' : state.staff.authorized_wards?.length ? state.staff.authorized_wards.map(ward => `Ward ${String(ward.ward_number).padStart(2, '0')}`).join(', ') : 'None assigned'}</dd></div>
           <div><dt>Reporting officer</dt><dd>{state.staff.reportsTo?.full_name_mr || state.staff.reportsTo?.full_name_en || state.staff.reportsTo?.staff_id || 'Not configured'}</dd></div>
         </dl>
-        <div className="work-stat-grid">
+        <div className="work-stat-grid" id={administratorOnly ? 'admin-reports' : undefined}>
           {[['Assigned to me', state.stats.assigned], ['Pending', state.stats.pending], ['Submitted', state.stats.submitted], ['In progress', state.stats.in_progress], ['Resolved', state.stats.resolved], ['Visible total', state.stats.total]].map(([label, value]) => <div key={label}><span>{label}</span><strong>{value}</strong></div>)}
         </div>
         {state.staff.is_main_system_admin && state.complaints.length > 0 && <div className="department-statistics"><h2>Department complaint counts</h2>{state.departments.map(department => {
@@ -836,7 +938,7 @@ function StaffDashboard({ administratorOnly = false }) {
         {state.staff.is_main_system_admin && <button className="button button-secondary" type="button" onClick={() => navigate('/staff/management')}>Open staff, department, settings, and audit management</button>}
         {state.actionMessage && <p className="notice" role="status">{state.actionMessage}</p>}
         <div className="queue-filters"><button type="button" className={onlyAssigned ? 'button button-primary' : 'button button-secondary'} aria-pressed={onlyAssigned} onClick={() => setOnlyAssigned(value => !value)}>{onlyAssigned ? 'Showing my assigned complaints' : 'Show only complaints assigned to me'}</button></div>
-        <div className="work-queue">
+        <div className="work-queue" id={administratorOnly ? 'all-complaints' : undefined}>
           {visibleComplaints.length ? visibleComplaints.map(complaint => {
             const activeAssignment = complaint.assignments.find(assignment => !assignment.unassigned_at)
             const department = state.departments.find(item => item.id === complaint.department_id)
@@ -898,7 +1000,7 @@ function StaffDashboard({ administratorOnly = false }) {
             )
           }) : <p className="field-hint">{onlyAssigned ? 'No complaints are assigned to this account.' : 'No complaints are currently visible to this account’s department, ward, and permissions.'}</p>}
         </div>
-        <button className="button button-secondary" type="button" onClick={async () => { await requireSupabase().auth.signOut(); navigate('/', { replace: true }) }}>Sign out</button>
+        <button className="button button-secondary" type="button" onClick={async () => { await requireSupabase().auth.signOut(); navigate(administratorOnly ? '/admin-login' : '/', { replace: true }) }}>Sign out</button>
       </section>
     </Layout>
   )
@@ -935,6 +1037,8 @@ const STAFF_ROLE_LABELS = {
 }
 
 function StaffManagement() {
+  const [managementSearchParams] = useSearchParams()
+  const requestedSection = managementSearchParams.get('section')
   const [state, setState] = useState({ status: 'loading', departments: [], designations: [], wards: [], staff: [], logs: [], settings: [] })
   const [profile, setProfile] = useState(emptyStaffProfile)
   const [designationProfile, setDesignationProfile] = useState(emptyDesignationProfile)
@@ -951,7 +1055,7 @@ function StaffManagement() {
   const [confirmAdminPassword, setConfirmAdminPassword] = useState('')
   const [search, setSearch] = useState('')
   const [departmentFilter, setDepartmentFilter] = useState('')
-  const [tab, setTab] = useState('directory')
+  const [tab, setTab] = useState(() => ['settings', 'audit'].includes(requestedSection) ? requestedSection : 'directory')
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
 
@@ -974,6 +1078,12 @@ function StaffManagement() {
       .catch(error => { if (active) setState(current => ({ ...current, status: 'error', message: error.message })) })
     return () => { active = false }
   }, [])
+
+  useEffect(() => {
+    if (state.status !== 'loaded' || !window.location.hash) return
+    const target = document.getElementById(window.location.hash.slice(1))
+    target?.scrollIntoView({ block: 'start' })
+  }, [state.status, tab])
 
   function editStaff(row) {
     setEditingId(row.user_id)
@@ -1277,11 +1387,11 @@ function StaffManagement() {
   return (
     <Layout>
       <section className="management-page">
-        <header className="management-heading"><div><p className="eyebrow">Restricted administrator access</p><h1>Department and Staff Management</h1><p>Only the Main System Administrator can manage accounts, reporting relationships, wards, and permissions.</p></div><button className="button button-secondary" type="button" onClick={() => window.location.assign('/staff/dashboard')}>Staff dashboard</button></header>
+        <header className="management-heading" id="staff-management"><div><p className="eyebrow">Restricted administrator access</p><h1>Department and Staff Management</h1><p>Only the Main System Administrator can manage accounts, reporting relationships, wards, and permissions.</p></div><button className="button button-secondary" type="button" onClick={() => window.location.assign('/admin-dashboard')}>Administrator dashboard</button></header>
         <div className="management-tabs" aria-label="Staff management sections"><button type="button" aria-pressed={tab === 'directory'} onClick={() => setTab('directory')}>Departments and staff</button><button type="button" aria-pressed={tab === 'settings'} onClick={() => setTab('settings')}>System settings</button><button type="button" aria-pressed={tab === 'audit'} onClick={() => setTab('audit')}>Audit log</button></div>
         {message && <p className="notice" role="status">{message}</p>}
         {tab === 'directory' ? <>
-          <section className="form-card staff-editor">
+          <section className="form-card staff-editor" id="department-management">
             <h2>Departments</h2>
             <p className="field-hint">Add or update department records. Departments with staff or complaint data cannot be deleted.</p>
             <form className="management-form-grid" onSubmit={submitDepartment}>
@@ -1332,7 +1442,7 @@ function StaffManagement() {
               <label className="field"><span>Account role</span><select value={profile.role} onChange={event => setProfile({ ...profile, role: event.target.value })}>{Object.entries(STAFF_ROLE_LABELS).filter(([value]) => ['department_head', 'supervising_officer', 'junior_section_officer', 'assigned_staff'].includes(value) || (editingId && value === profile.role)).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><small className="field-hint">Role labels do not grant access by themselves. Ward-scoped permissions below are enforced by the database. Administrator and legacy roles cannot be assigned to new accounts.</small></label>
               <label className="field"><span>Reporting officer</span><select value={profile.reports_to_user_id} onChange={event => setProfile({ ...profile, reports_to_user_id: event.target.value })}><option value="">No reporting officer configured</option>{state.staff.filter(row => row.department_id === profile.department_id && row.user_id !== editingId && row.active && row.approved && !row.force_password_change).map(row => <option key={row.user_id} value={row.user_id}>{row.full_name_mr || row.full_name_en || row.staff_id}</option>)}</select></label>
             </div>
-            <fieldset className="management-fieldset"><legend>Authorized wards</legend><div className="ward-checkboxes">{state.wards.map(ward => <label key={ward.id}><input type="checkbox" checked={profile.ward_ids.includes(ward.id)} disabled={!ward.is_active && !profile.ward_ids.includes(ward.id)} onChange={() => toggleWard(ward.id)} /> Ward {String(ward.ward_number).padStart(2, '0')} · {ward.ward_name}{!ward.is_active && ' (inactive)'}</label>)}</div></fieldset>
+            <fieldset className="management-fieldset" id="ward-management"><legend>Authorized wards</legend><div className="ward-checkboxes">{state.wards.map(ward => <label key={ward.id}><input type="checkbox" checked={profile.ward_ids.includes(ward.id)} disabled={!ward.is_active && !profile.ward_ids.includes(ward.id)} onChange={() => toggleWard(ward.id)} /> Ward {String(ward.ward_number).padStart(2, '0')} · {ward.ward_name}{!ward.is_active && ' (inactive)'}</label>)}</div></fieldset>
             <fieldset className="management-fieldset"><legend>Permissions by assigned ward</legend>{profile.ward_ids.map(wardId => {
               const ward = state.wards.find(item => item.id === wardId)
               return <div className="permission-ward" key={wardId}><strong>Ward {String(ward?.ward_number || '').padStart(2, '0')}</strong><div className="permission-checkboxes">{permissionNames.map(([code, label]) => <label key={code}><input type="checkbox" checked={profile.permissions.some(item => item.ward_id === wardId && item.permission_code === code)} onChange={() => togglePermission(wardId, code)} />{label}</label>)}</div></div>
@@ -1341,7 +1451,7 @@ function StaffManagement() {
             <label className="verification-check"><input type="checkbox" checked={profile.active} onChange={event => setProfile({ ...profile, active: event.target.checked })} /><span>Account active</span></label>
             <div className="editor-actions"><button className="button button-primary" type="submit" disabled={busy || !profile.department_id || !profile.mobile_e164 || (!editingId && !profile.designation_id)}>{busy ? 'Saving…' : editingId ? 'Save staff changes' : 'Create staff account'}</button>{editingId && <button className="button button-secondary" type="button" onClick={cancelEdit}>Cancel</button>}</div>
           </form>
-          <div className="directory-controls">
+          <div className="directory-controls" id="user-management">
             <label className="field"><span>Search staff by name, ID, or designation</span><div className="search-field"><Search size={18} /><input value={search} onChange={event => setSearch(event.target.value)} /></div></label>
             <label className="field"><span>Filter department</span><select value={departmentFilter} onChange={event => setDepartmentFilter(event.target.value)}><option value="">All departments</option>{state.departments.map(department => <option key={department.id} value={department.id}>{department.name_mr} · {department.name}</option>)}</select></label>
           </div>
@@ -1374,6 +1484,7 @@ function AppRoutes() {
       <Route path="/register" element={<Auth register />} />
       <Route path="/login" element={<Auth />} />
       <Route path="/staff-login" element={<StaffAuth />} />
+      <Route path="/admin-login" element={<AdminLogin />} />
       <Route path="/admin-setup" element={<AdminSetup />} />
       <Route path="/staff/dashboard" element={<StaffDashboard />} />
       <Route path="/admin-dashboard" element={<StaffDashboard administratorOnly />} />
